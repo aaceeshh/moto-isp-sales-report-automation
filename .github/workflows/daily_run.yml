@@ -1,0 +1,34 @@
+name: Daily ISP Report
+on:
+  schedule:
+    # 05:00 UTC = 10:30 AM IST
+    # 08:00 UTC = 01:30 PM IST
+    # 11:00 UTC = 04:30 PM IST
+    # 14:00 UTC = 07:30 PM IST
+    # 17:00 UTC = 10:30 PM IST
+    - cron: '0 5,8,11,14,17 * * *'
+  workflow_dispatch: # Allows manual testing
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Chrome and Dependencies
+        run: |
+          pip install selenium webdriver-manager google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Run Python Script
+        env:
+          PORTAL_USER: ${{ secrets.PORTAL_USER }}
+          PORTAL_PASS: ${{ secrets.PORTAL_PASS }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          GCP_JSON_KEY: ${{ secrets.GCP_JSON_KEY }}
+        run: python main.py
