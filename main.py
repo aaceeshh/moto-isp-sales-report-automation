@@ -15,7 +15,7 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
 # --- 1. CONFIGURATION ---
-PORTAL_URL = "https://motoindia.nuralsales.app/login" # Update this
+PORTAL_URL = "https://motoindia.nuralsales.app/login" 
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
@@ -70,13 +70,12 @@ try:
     
     # Wait for download
     print("Waiting for download to finish...")
-    timeout = 180
+    timeout = 120
     seconds = 0
     latest_file = None
     while seconds < timeout:
-        temp_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.crdownload"))
         files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.xlsx"))
-        if files and not temp_files:
+        if files:
             latest_file = max(files, key=os.path.getctime)
             if os.path.getsize(latest_file) > 0:
                 print(f"Verified: {os.path.basename(latest_file)} ready.")
@@ -84,37 +83,37 @@ try:
         time.sleep(5)
         seconds += 5
 
-    # --- 3. UPLOAD (WITH STRICTOR QUOTA BYPASS) ---
+    # --- 3. THE "FORCED OWNERSHIP" UPLOAD ---
     print("Uploading to Google Drive...")
     creds_info = json.loads(JSON_KEY_DATA)
     creds = service_account.Credentials.from_service_account_info(creds_info)
     service = build('drive', 'v3', credentials=creds)
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
+    
+    # Remove any existing file with this name first to ensure no quota conflicts
     query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True).execute()
-    files = results.get('files', [])
+    results = service.files().list(q=query, fields="files(id)").execute()
+    for f in results.get('files', []):
+        service.files().delete(fileId=f['id']).execute()
+        print(f"Cleaned up old version of {DRIVE_FILE_NAME}")
 
-    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
-
-    if files:
-        # THE FIX: Added supportsAllDrives=True here as well
-        file_id = files[0]['id']
-        service.files().update(
-            fileId=file_id, 
-            media_body=media, 
-            supportsAllDrives=True 
-        ).execute()
-        print(f"Success: Updated {DRIVE_FILE_NAME}")
-    else:
-        file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
-        service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id', 
-            supportsAllDrives=True
-        ).execute()
-        print(f"Success: Created {DRIVE_FILE_NAME}")
+    # Upload using simple multipart (best for quota bypass under 5MB)
+    file_metadata = {
+        'name': DRIVE_FILE_NAME,
+        'parents': [DRIVE_FOLDER_ID]
+    }
+    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    
+    # Crucial: supportsAllDrives=True and NO resumable upload for this small file size
+    service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
+    
+    print(f"Success: {DRIVE_FILE_NAME} is now in your folder.")
 
 except Exception as e:
     print(f"ERROR: {e}")
