@@ -15,7 +15,7 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
 # --- 1. CONFIGURATION ---
-PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is updated
+PORTAL_URL = "https://motoindia.nuralsales.app/login" # Update this
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
@@ -25,19 +25,14 @@ DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
-# --- 2. BROWSER SETUP (Optimized for Downloads) ---
+# --- 2. BROWSER SETUP ---
 chrome_options = Options()
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_argument("--window-size=1920,1080")
 
-prefs = {
-    "download.default_directory": DOWNLOAD_DIR,
-    "download.prompt_for_download": False,
-    "directory_upgrade": True,
-    "safebrowsing.enabled": True
-}
+prefs = {"download.default_directory": DOWNLOAD_DIR, "download.prompt_for_download": False}
 chrome_options.add_experimental_option("prefs", prefs)
 
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
@@ -68,38 +63,28 @@ try:
         time.sleep(1)
     
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'SEARCH')]"))
-    time.sleep(25) # Wait for portal to process large data search
+    time.sleep(20) 
     
-    print("Exporting Excel (Large File Mode)...")
+    print("Exporting Excel...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'EXPORT EXCEL')]"))
     
-    # --- DYNAMIC WAIT FOR LARGE DOWNLOADS ---
-    print("Waiting for download to finish (Max 3 minutes)...")
-    timeout = 180 # 3 minutes for 12MB+ files
+    # Wait for download
+    print("Waiting for download to finish...")
+    timeout = 180
     seconds = 0
     latest_file = None
-    
     while seconds < timeout:
-        # Check if there are any temporary '.crdownload' files still active
         temp_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.crdownload"))
         files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.xlsx"))
-        
         if files and not temp_files:
             latest_file = max(files, key=os.path.getctime)
-            size = os.path.getsize(latest_file)
-            if size > 0:
-                print(f"Verified: {os.path.basename(latest_file)} is ready ({round(size/1024/1024, 2)} MB)")
+            if os.path.getsize(latest_file) > 0:
+                print(f"Verified: {os.path.basename(latest_file)} ready.")
                 break
-        
         time.sleep(5)
         seconds += 5
-        if seconds % 30 == 0:
-            print(f"...still waiting ({seconds}s elapsed)...")
 
-    if not latest_file or os.path.getsize(latest_file) == 0:
-        raise Exception("Download timed out or file is empty.")
-
-    # --- 3. GOOGLE DRIVE UPLOAD (Resumable for Large Files) ---
+    # --- 3. UPLOAD (WITH STRICTOR QUOTA BYPASS) ---
     print("Uploading to Google Drive...")
     creds_info = json.loads(JSON_KEY_DATA)
     creds = service_account.Credentials.from_service_account_info(creds_info)
@@ -107,20 +92,29 @@ try:
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
     query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id)").execute()
+    results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True).execute()
     files = results.get('files', [])
 
-    # Using resumable=True is mandatory for 10MB+ files to prevent timeouts
     media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
 
     if files:
+        # THE FIX: Added supportsAllDrives=True here as well
         file_id = files[0]['id']
-        service.files().update(fileId=file_id, media_body=media).execute()
-        print(f"Success: Updated {DRIVE_FILE_NAME} in your Drive.")
+        service.files().update(
+            fileId=file_id, 
+            media_body=media, 
+            supportsAllDrives=True 
+        ).execute()
+        print(f"Success: Updated {DRIVE_FILE_NAME}")
     else:
         file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f"Success: Created {DRIVE_FILE_NAME} in your Drive.")
+        service.files().create(
+            body=file_metadata, 
+            media_body=media, 
+            fields='id', 
+            supportsAllDrives=True
+        ).execute()
+        print(f"Success: Created {DRIVE_FILE_NAME}")
 
 except Exception as e:
     print(f"ERROR: {e}")
