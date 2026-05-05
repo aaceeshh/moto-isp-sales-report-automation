@@ -1,34 +1,42 @@
-name: Daily ISP Report
+name: ISP Sales Report Automation
+
 on:
   schedule:
-    # 05:00 UTC = 10:30 AM IST
-    # 08:00 UTC = 01:30 PM IST
-    # 11:00 UTC = 04:30 PM IST
-    # 14:00 UTC = 07:30 PM IST
-    # 17:00 UTC = 10:30 PM IST
+    # 1. 10:30 AM, 1:30 PM, 4:30 PM, 7:30 PM, 10:30 PM IST (UTC 5:00, 8:00, 11:00, 14:00, 17:00)
     - cron: '0 5,8,11,14,17 * * *'
-  workflow_dispatch: # Allows manual testing
+    # 2. 11:45 PM IST (UTC 18:15)
+    - cron: '45 18 * * *'
+  workflow_dispatch: # Allows manual trigger from the Actions tab
 
 jobs:
-  run-automation:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
-      - name: Install Chrome and Dependencies
+      - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install selenium webdriver-manager google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
-      - name: Run Python Script
+      - name: Run ISP Automation Script
         env:
+          # Portal Credentials
           PORTAL_USER: ${{ secrets.PORTAL_USER }}
           PORTAL_PASS: ${{ secrets.PORTAL_PASS }}
+          
+          # Google Drive Configuration
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-          GCP_JSON_KEY: ${{ secrets.GCP_JSON_KEY }}
+          
+          # Ashish's Personal OAuth Credentials (The Identity Fix)
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: python main.py
