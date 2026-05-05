@@ -12,14 +12,14 @@ from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
 # --- 1. CONFIGURATION ---
-PORTAL_URL = "https://motoindia.nuralsales.app/login" 
+PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is correct
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-JSON_KEY_DATA = os.getenv("GCP_JSON_KEY")
 
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR):
@@ -32,18 +32,16 @@ chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_experimental_option("prefs", {
     "download.default_directory": DOWNLOAD_DIR,
-    "download.prompt_for_download": False,
-    "directory_upgrade": True,
-    "safebrowsing.enabled": True
+    "download.prompt_for_download": False
 })
 
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 actions = ActionChains(driver)
 
 try:
-    print(f"Logging in as {USERNAME}...")
+    print(f"Logging into portal as {USERNAME}...")
     driver.get(PORTAL_URL)
-    time.sleep(10) # Increased initial wait
+    time.sleep(10)
 
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Username']").send_keys(USERNAME)
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Password']").send_keys(PASSWORD)
@@ -51,14 +49,14 @@ try:
     driver.execute_script("arguments[0].click();", login_btn)
     time.sleep(15) 
 
-    print("Navigating to Reports...")
+    print("Navigating to ISP Sales Reports...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//img[@alt='reports']"))
     time.sleep(5)
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//a[@href='/isp-sales-report']"))
     time.sleep(15) 
 
     date_str = datetime.now().strftime("%d%m%Y")
-    print(f"Setting dates for {date_str}...")
+    print(f"Selecting date: {date_str}...")
     calendars = driver.find_elements(By.XPATH, "//*[local-name()='svg' and @data-testid='CalendarTodayIcon']")
     for cal in calendars:
         actions.move_to_element(cal).click().send_keys(date_str).send_keys(Keys.ENTER).perform()
@@ -67,53 +65,54 @@ try:
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'SEARCH')]"))
     time.sleep(25) 
     
-    print("Triggering Export...")
+    print("Exporting Excel file...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'EXPORT EXCEL')]"))
     
-    # --- 3. THE HEAVY WAIT LOGIC (Fixes 'Empty Sequence' Error) ---
-    print("Waiting for file to appear in cloud storage (Max 5 mins)...")
-    wait_time = 0
-    max_wait = 300 # 5 Minutes
+    # Dynamic wait for large files (12MB+)
+    print("Waiting for download to finalize...")
+    timeout = 300 # 5 minutes
+    elapsed = 0
     latest_file = None
-
-    while wait_time < max_wait:
+    while elapsed < timeout:
         files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.xlsx"))
-        # Ensure no '.crdownload' temp files are present
-        temp_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.crdownload"))
-        
-        if files and not temp_files:
+        temp = glob.glob(os.path.join(DOWNLOAD_DIR, "*.crdownload"))
+        if files and not temp:
             latest_file = max(files, key=os.path.getctime)
             if os.path.getsize(latest_file) > 0:
-                print(f"Success: Found {os.path.basename(latest_file)} ({os.path.getsize(latest_file)} bytes)")
+                print(f"Verified: {os.path.basename(latest_file)} is ready.")
                 break
-        
         time.sleep(10)
-        wait_time += 10
-        if wait_time % 60 == 0:
-            print(f"Still waiting for portal to generate file... ({wait_time}s)")
+        elapsed += 10
 
-    if not latest_file:
-        raise Exception("PORTAL ERROR: The portal never started the download.")
-
-    # --- 4. UPLOAD ---
-    print("Connecting to Google Drive...")
-    creds = service_account.Credentials.from_service_account_info(json.loads(JSON_KEY_DATA))
+    # --- 3. UPLOAD AS ASHISH (NO QUOTA LIMITS) ---
+    print("Authenticating with Personal OAuth Token...")
+    creds = Credentials(
+        None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN"),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET")
+    )
+    creds.refresh(Request())
     service = build('drive', 'v3', credentials=creds)
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
     
-    # Clean up old file to prevent quota check errors
-    query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents"
-    existing = service.files().list(q=query).execute().get('files', [])
-    for f in existing:
-        service.files().delete(fileId=f['id']).execute()
-        print("Removed old file version.")
+    # Overwrite existing file logic
+    query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    existing_files = results.get('files', [])
 
     media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
-    file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
-    
-    service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
-    print(f"REPORT UPLOADED SUCCESSFULLY TO GOOGLE DRIVE")
+
+    if existing_files:
+        file_id = existing_files[0]['id']
+        service.files().update(fileId=file_id, media_body=media).execute()
+        print(f"SUCCESS: Updated {DRIVE_FILE_NAME} in your Drive.")
+    else:
+        file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
+        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        print(f"SUCCESS: Created {DRIVE_FILE_NAME} in your Drive.")
 
 except Exception as e:
     print(f"CRITICAL ERROR: {e}")
