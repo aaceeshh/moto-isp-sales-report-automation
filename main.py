@@ -2,6 +2,7 @@ import os
 import time
 import glob
 import json
+import io
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -14,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
-# --- 1. CLOUD CONFIGURATION ---
+# --- 1. CONFIGURATION ---
 PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is updated
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
@@ -25,11 +26,7 @@ DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
-# --- 2. DATE CALCULATION ---
-today = datetime.now()
-date_str = today.strftime("%d%m%Y") 
-
-# --- 3. BROWSER SETUP ---
+# --- 2. BROWSER SETUP ---
 chrome_options = Options()
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
@@ -43,25 +40,25 @@ driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), opti
 actions = ActionChains(driver)
 
 try:
-    print(f"Logging into portal as {USERNAME}...")
+    print(f"Logging in as {USERNAME}...")
     driver.get(PORTAL_URL)
     time.sleep(5)
 
-    # Login Logic
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Username']").send_keys(USERNAME)
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Password']").send_keys(PASSWORD)
     login_btn = driver.find_element(By.XPATH, "//div[text()='LOGIN']")
     driver.execute_script("arguments[0].click();", login_btn)
     time.sleep(10) 
 
-    # Navigation
     print("Navigating to Reports...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//img[@alt='reports']"))
     time.sleep(5)
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//a[@href='/isp-sales-report']"))
     time.sleep(10) 
 
-    print(f"Setting dates for {date_str}...")
+    # Use today's date
+    date_str = datetime.now().strftime("%d%m%Y")
+    print(f"Selecting dates for {date_str}...")
     calendars = driver.find_elements(By.XPATH, "//*[local-name()='svg' and @data-testid='CalendarTodayIcon']")
     for cal in calendars:
         actions.move_to_element(cal).click().send_keys(date_str).send_keys(Keys.ENTER).perform()
@@ -70,13 +67,13 @@ try:
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'SEARCH')]"))
     time.sleep(20) 
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'EXPORT EXCEL')]"))
-    time.sleep(25) # Slightly longer wait for the cloud download
+    time.sleep(25) 
 
-    # --- 4. GOOGLE DRIVE UPLOAD (STRICT QUOTA FIX) ---
-    print("Uploading to Google Drive...")
+    # --- 3. THE "QUOTA BYPASS" UPLOAD ---
+    print("Uploading to Google Drive (Quota Bypass Mode)...")
     list_of_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.xlsx"))
     if not list_of_files:
-        raise Exception("Download failed: No Excel file found in cloud directory.")
+        raise Exception("No file found in downloads.")
     latest_file = max(list_of_files, key=os.path.getctime)
 
     creds_info = json.loads(JSON_KEY_DATA)
@@ -85,27 +82,28 @@ try:
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
     
-    # Check if file exists in the specific folder
+    # 1. Find if file exists
     query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True).execute()
+    results = service.files().list(q=query, fields="files(id)").execute()
     files = results.get('files', [])
 
-    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
+    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
     if files:
-        # Update content of the file you already own
         file_id = files[0]['id']
-        service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
+        service.files().update(fileId=file_id, media_body=media).execute()
         print(f"Success: Updated {DRIVE_FILE_NAME}")
     else:
-        # Create file with metadata that FORCES it into your storage
+        # THE FIX: Create metadata first, then upload separately
         file_metadata = {
             'name': DRIVE_FILE_NAME,
             'parents': [DRIVE_FOLDER_ID]
         }
-        # Using 'fields=id' and 'resumable=True' to ensure it processes as a drop-off
-        service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
-        print(f"Success: Created {DRIVE_FILE_NAME}")
+        # Create the shell
+        file = service.files().create(body=file_metadata, fields='id').execute()
+        # Upload to the shell
+        service.files().update(fileId=file['id'], media_body=media).execute()
+        print(f"Success: Created {DRIVE_FILE_NAME} in your storage.")
 
 except Exception as e:
     print(f"ERROR: {e}")
