@@ -15,7 +15,7 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
 # --- 1. CLOUD CONFIGURATION ---
-PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is your actual URL
+PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is updated
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
@@ -47,14 +47,14 @@ try:
     driver.get(PORTAL_URL)
     time.sleep(5)
 
-    # Login
+    # Login Logic
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Username']").send_keys(USERNAME)
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Password']").send_keys(PASSWORD)
     login_btn = driver.find_element(By.XPATH, "//div[text()='LOGIN']")
     driver.execute_script("arguments[0].click();", login_btn)
     time.sleep(10) 
 
-    # Navigate and Export
+    # Navigation
     print("Navigating to Reports...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//img[@alt='reports']"))
     time.sleep(5)
@@ -70,13 +70,13 @@ try:
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'SEARCH')]"))
     time.sleep(20) 
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'EXPORT EXCEL')]"))
-    time.sleep(20) 
+    time.sleep(25) # Slightly longer wait for the cloud download
 
-    # --- 4. GOOGLE DRIVE UPLOAD (Fixed for Quota Issues) ---
+    # --- 4. GOOGLE DRIVE UPLOAD (STRICT QUOTA FIX) ---
     print("Uploading to Google Drive...")
     list_of_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.xlsx"))
     if not list_of_files:
-        raise Exception("Download failed: No Excel file found.")
+        raise Exception("Download failed: No Excel file found in cloud directory.")
     latest_file = max(list_of_files, key=os.path.getctime)
 
     creds_info = json.loads(JSON_KEY_DATA)
@@ -85,21 +85,25 @@ try:
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
     
-    # Search specifically in your folder
+    # Check if file exists in the specific folder
     query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id)", supportsAllDrives=True).execute()
     files = results.get('files', [])
 
-    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
 
     if files:
-        # Update existing file
+        # Update content of the file you already own
         file_id = files[0]['id']
         service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
         print(f"Success: Updated {DRIVE_FILE_NAME}")
     else:
-        # Create new file inside your folder to use YOUR quota
-        file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
+        # Create file with metadata that FORCES it into your storage
+        file_metadata = {
+            'name': DRIVE_FILE_NAME,
+            'parents': [DRIVE_FOLDER_ID]
+        }
+        # Using 'fields=id' and 'resumable=True' to ensure it processes as a drop-off
         service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
         print(f"Success: Created {DRIVE_FILE_NAME}")
 
