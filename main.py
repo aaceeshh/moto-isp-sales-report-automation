@@ -16,12 +16,12 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
 # --- 1. CONFIGURATION ---
-PORTAL_URL = "https://motoindia.nuralsales.app/login" # Ensure this is correct
+PORTAL_URL = "https://motoindia.nuralsales.app/login"  # Ensure this is correct
 USERNAME = os.getenv("PORTAL_USER")
 PASSWORD = os.getenv("PORTAL_PASS")
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID")
-
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
+
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
@@ -47,13 +47,13 @@ try:
     driver.find_element(By.XPATH, "//input[@placeholder='Enter Password']").send_keys(PASSWORD)
     login_btn = driver.find_element(By.XPATH, "//div[text()='LOGIN']")
     driver.execute_script("arguments[0].click();", login_btn)
-    time.sleep(15) 
+    time.sleep(15)
 
     print("Navigating to ISP Sales Reports...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//img[@alt='reports']"))
     time.sleep(5)
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//a[@href='/isp-sales-report']"))
-    time.sleep(15) 
+    time.sleep(15)
 
     date_str = datetime.now().strftime("%d%m%Y")
     print(f"Selecting date: {date_str}...")
@@ -61,16 +61,16 @@ try:
     for cal in calendars:
         actions.move_to_element(cal).click().send_keys(date_str).send_keys(Keys.ENTER).perform()
         time.sleep(2)
-    
+
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'SEARCH')]"))
-    time.sleep(25) 
-    
+    time.sleep(25)
+
     print("Exporting Excel file...")
     driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(., 'EXPORT EXCEL')]"))
-    
+
     # Dynamic wait for large files (12MB+)
     print("Waiting for download to finalize...")
-    timeout = 300 # 5 minutes
+    timeout = 300  # 5 minutes
     elapsed = 0
     latest_file = None
     while elapsed < timeout:
@@ -83,6 +83,13 @@ try:
                 break
         time.sleep(10)
         elapsed += 10
+
+    # --- 2a. DOWNLOAD-TIMEOUT GUARD ---
+    if latest_file is None:
+        raise RuntimeError(
+            f"Download timed out after {timeout}s. "
+            f"Files in directory: {os.listdir(DOWNLOAD_DIR)}"
+        )
 
     # --- 3. UPLOAD AS ASHISH (NO QUOTA LIMITS) ---
     print("Authenticating with Personal OAuth Token...")
@@ -97,13 +104,17 @@ try:
     service = build('drive', 'v3', credentials=creds)
 
     DRIVE_FILE_NAME = "Daily_ISP_Sales_Report.xlsx"
-    
-    # Overwrite existing file logic
+
+    # Overwrite existing .xlsx logic
     query = f"name='{DRIVE_FILE_NAME}' and '{DRIVE_FOLDER_ID}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id)").execute()
     existing_files = results.get('files', [])
 
-    media = MediaFileUpload(latest_file, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
+    media = MediaFileUpload(
+        latest_file,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        resumable=True
+    )
 
     if existing_files:
         file_id = existing_files[0]['id']
@@ -113,6 +124,60 @@ try:
         file_metadata = {'name': DRIVE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         print(f"SUCCESS: Created {DRIVE_FILE_NAME} in your Drive.")
+
+    # --- 4. ALSO MAINTAIN A GOOGLE SHEET FOR THE DASHBOARD ---
+    # The dashboard reads this Sheet via its published-to-web CSV URL.
+    print("Maintaining Google Sheet for dashboard...")
+    SHEET_NAME = "Daily_ISP_Sales_Report_Live"
+
+    sheet_query = (
+        f"name='{SHEET_NAME}' "
+        f"and '{DRIVE_FOLDER_ID}' in parents "
+        f"and mimeType='application/vnd.google-apps.spreadsheet' "
+        f"and trashed=false"
+    )
+    sheet_results = service.files().list(q=sheet_query, fields="files(id)").execute()
+    sheet_existing = sheet_results.get('files', [])
+
+    sheet_media = MediaFileUpload(
+        latest_file,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        resumable=True
+    )
+
+    if sheet_existing:
+        sheet_id = sheet_existing[0]['id']
+        service.files().update(fileId=sheet_id, media_body=sheet_media).execute()
+        print(f"SUCCESS: Updated dashboard Sheet ({sheet_id}).")
+
+        # Self-check: confirm conversion still works (catches Drive API quirks)
+        verify = service.files().get(fileId=sheet_id, fields="mimeType").execute()
+        if verify['mimeType'] != 'application/vnd.google-apps.spreadsheet':
+            raise RuntimeError(
+                f"Sheet conversion broke - mimeType is now {verify['mimeType']}. "
+                f"Drive update no longer auto-converts xlsx to Sheets. "
+                f"Switch to Option B (Sheets API). Sheet ID: {sheet_id}"
+            )
+    else:
+        sheet_metadata = {
+            'name': SHEET_NAME,
+            'parents': [DRIVE_FOLDER_ID],
+            'mimeType': 'application/vnd.google-apps.spreadsheet'
+        }
+        new_sheet = service.files().create(
+            body=sheet_metadata,
+            media_body=sheet_media,
+            fields='id'
+        ).execute()
+        new_id = new_sheet['id']
+        print(f"SUCCESS: Created dashboard Sheet ({new_id}).")
+        print("=" * 70)
+        print("ACTION REQUIRED (one-time setup):")
+        print(f"1. Open: https://docs.google.com/spreadsheets/d/{new_id}")
+        print("2. File > Share > Publish to web")
+        print("3. Choose 'Entire document', format 'Comma-separated values (.csv)'")
+        print("4. Click Publish, copy the CSV URL, share it with Claude.")
+        print("=" * 70)
 
 except Exception as e:
     print(f"CRITICAL ERROR: {e}")
