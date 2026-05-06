@@ -2,8 +2,8 @@ name: ISP Sales Report Automation
 
 on:
   schedule:
-    # 1. 10:30 AM, 1:30 PM, 4:30 PM, 7:30 PM, 10:30 PM IST (UTC 5:00, 8:00, 11:00, 14:00, 17:00)
-    - cron: '0 5,8,11,14,17 * * *'
+    # 1. 10:30 AM, 1:30 PM, 3:30 PM, 5:30 PM, 7:30 PM, 9:30 PM, 11:30 PM IST (UTC 5:00, 8:00, 10:00, 12:00, 14:00, 16:00)
+    - cron: '0 5,8,10,12,14,16 * * *'
     # 2. 11:45 PM IST (UTC 18:15)
     - cron: '45 18 * * *'
   workflow_dispatch: # Allows manual trigger from the Actions tab
