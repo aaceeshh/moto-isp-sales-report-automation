@@ -50,7 +50,6 @@ TSI_EDITOR_EMAILS = [
     "madhurjya.tamuly@stmpl.co.in",
     "rajoo.thakur@stmpl.co.in",
     "saroj.rana@stmpl.co.in",
-    "shawa@motorola.com"
 ]
 
 # ── Column definition ─────────────────────────────────────────────────────────
@@ -508,7 +507,7 @@ def main():
     creds     = get_creds()
     drv       = build("drive",  "v3", credentials=creds)
     svc       = build("sheets", "v4", credentials=creds)
-    folder_id = os.environ["DRIVE_FOLDER_ID"]
+    folder_id = os.environ["GDRIVE_FOLDER_ID"]
 
     print("[Remarks] Fetching Targets CSV...")
     targets = load_targets()
