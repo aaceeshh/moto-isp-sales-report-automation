@@ -218,8 +218,7 @@ def get_creds():
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
         scopes=[
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",   # covers Sheets API too
         ],
     )
 
