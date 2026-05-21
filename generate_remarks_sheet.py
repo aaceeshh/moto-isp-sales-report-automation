@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
 """
 generate_remarks_sheet.py
-─────────────────────────────────────────────────────────────────────────────
-Reads today's ISP sales data from the published Sales CSV, filters
-Zero Sale Uploaded + Sale Not Uploaded ISDs, and writes a richly formatted
-tab (named by date, e.g. "21st May") into a Google Sheets file called
+Reads yesterday's ISP sales data from the published Sales CSV, filters
+Zero Sale Uploaded + Sale Not Uploaded ISDs, and writes a formatted tab
+(named by date, e.g. "21st May") into a Google Sheets file called
 "Remarks Required for Zero & No Sales Upload" in the shared Drive folder.
 
-Each tab contains:
-  • Section A — ZERO SALE ISDs, sorted alphabetically by TSI Name
-      - Data table with per-ISD Remarks column
-      - TSI Remarks block (one row per TSI for an overall comment)
-  • 3 blank separator rows
-  • Section B — NO SALES UPLOAD ISDs, sorted alphabetically by TSI Name
-      - Same structure as Section A
+Runs at 12:03 PM IST — always processes the previous calendar day.
+Full refresh: existing tab for that date is deleted and recreated.
 
-Running the script again on the same day performs a full refresh
-(the existing tab is deleted and recreated with the latest data).
+Column I (Remarks) is the only editable column for TSI editors.
+All other columns are locked via protected ranges (owner-only).
 
-Required environment variables:
-  GOOGLE_CLIENT_ID      — OAuth2 client id
-  GOOGLE_CLIENT_SECRET  — OAuth2 client secret
-  GOOGLE_REFRESH_TOKEN  — OAuth2 refresh token (Drive + Sheets scopes)
-  GDRIVE_FOLDER_ID      — Drive folder id where the Remarks file lives
-  SALES_CSV_URL         — Published CSV URL of the auto-converted Sales Sheet
-  TARGETS_CSV_URL       — Published CSV URL of the Targets Sheet (for Category)
+Required env vars:
+  GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
+  DRIVE_FOLDER_ID   -- Drive folder id (same as main pipeline)
+  SALES_CSV_URL     -- Published CSV of the Sales Google Sheet
+  TARGETS_CSV_URL   -- Published CSV of the Targets Sheet
 """
 
 import csv
-import io
 import os
 import re
 from datetime import datetime, timezone, timedelta
@@ -37,87 +28,89 @@ import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Timezone ──────────────────────────────────────────────────────────────────
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
 REMARKS_FILE_NAME = "Remarks Required for Zero & No Sales Upload"
+SALES_CSV_URL     = os.environ.get("SALES_CSV_URL",   "")
+TARGETS_CSV_URL   = os.environ.get("TARGETS_CSV_URL", "")
 
-SALES_CSV_URL   = os.environ.get("SALES_CSV_URL",   "")
-TARGETS_CSV_URL = os.environ.get("TARGETS_CSV_URL", "")
+# TSI email addresses that get editor access to column I (Remarks) only.
+# Add / remove addresses here as your team changes.
+# Leave empty to skip sharing (you can share the file manually instead).
+TSI_EDITOR_EMAILS = [
+    "nabarun.bhattacharya@stmpl.co.in",
+    "radheshyam.mishra@stmpl.co.in",
+    "kumar.mukesh@stmpl.co.in",
+    "uday.tiwari@stmpl.co.in",
+    "sujit.rajak@stmpl.co.in",
+    "madhurjya.tamuly@stmpl.co.in",
+    "rajoo.thakur@stmpl.co.in",
+    "saroj.rana@stmpl.co.in",
+    "shawa@motorola.com"
+]
 
-# Column list for the data table (order matters — matches write_tab logic)
+# ── Column definition ─────────────────────────────────────────────────────────
+
 COLS = [
     "TSI Name", "ISP Code", "ISD Name", "Store Code",
     "Retailer / Store", "City", "State", "Category", "Remarks",
 ]
 N = len(COLS)
 
-
-# ── Colour palette (all values 0–1 floats) ───────────────────────────────────
+# ── Colour palette ────────────────────────────────────────────────────────────
 
 def _c(r, g, b):
-    return {"red": r / 255, "green": g / 255, "blue": b / 255}
+    return {"red": r/255, "green": g/255, "blue": b/255}
 
-C_MOTO_RED   = _c(225,  20,  10)   # #E1140A  Motorola red  — main title
-C_ORANGE_SEC = _c(230,  81,   0)   # #E65100  deep orange   — Zero Sale header
-C_RED_SEC    = _c(183,  28,  28)   # #B71C1C  dark red      — No Upload header
-C_COL_HDR    = _c(245, 245, 245)   # #F5F5F5  light grey    — column header bg
-C_ORANGE_ALT = _c(255, 243, 224)   # #FFF3E0  light orange  — Zero Sale alt rows
-C_RED_ALT    = _c(255, 235, 238)   # #FFEBEE  light red     — No Upload alt rows
+C_MOTO_RED   = _c(225, 20,  10)
+C_ORANGE_SEC = _c(230, 81,   0)
+C_RED_SEC    = _c(183, 28,  28)
+C_COL_HDR    = _c(245, 245, 245)
+C_ORANGE_ALT = _c(255, 243, 224)
+C_RED_ALT    = _c(255, 235, 238)
 C_WHITE      = _c(255, 255, 255)
-C_REMARKS    = _c(255, 253, 231)   # #FFFDE7  light yellow  — editable Remarks cells
-C_TSI_HDR    = _c(197, 202, 233)   # #C5CAE9  indigo tint   — TSI block header
-C_GRAY_TEXT  = _c( 66,  66,  66)
+C_REMARKS    = _c(255, 253, 231)
+C_TSI_HDR    = _c(197, 202, 233)
+C_GRAY_TEXT  = _c(66,  66,  66)
 C_WHITE_TEXT = _c(255, 255, 255)
 
-
-# ── Ordinal helpers ───────────────────────────────────────────────────────────
+# ── Ordinal / tab name ────────────────────────────────────────────────────────
 
 def _ordinal(n):
-    """Return ordinal string: 1 → '1st', 22 → '22nd', etc."""
-    suffix = (
-        "th" if 11 <= (n % 100) <= 13
-        else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    )
-    return f"{n}{suffix}"
-
+    suffix = ("th" if 11 <= (n % 100) <= 13
+              else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th"))
+    return str(n) + suffix
 
 def tab_name_for(dt):
-    """Return Google Sheets tab name, e.g. '21st May'."""
-    return f"{_ordinal(dt.day)} {dt.strftime('%b')}"
+    return _ordinal(dt.day) + " " + dt.strftime("%b")   # e.g. "21st May"
 
-
-# ── CSV / column helpers ──────────────────────────────────────────────────────
+# ── CSV helpers ───────────────────────────────────────────────────────────────
 
 def _norm(s):
-    """Normalise a header name for fuzzy matching."""
     return re.sub(r"[\s_\-]+", "", str(s)).lower()
 
-
 def _find_key(row_dict, *candidates):
-    """Return the actual dict key that matches any of the candidate names."""
     norm_map = {_norm(k): k for k in row_dict}
     for c in candidates:
-        match = norm_map.get(_norm(c))
-        if match:
-            return match
+        m = norm_map.get(_norm(c))
+        if m:
+            return m
     return None
 
-
 def _fetch_csv(url):
-    """Fetch a published Google Sheets CSV and return list-of-dicts."""
-    cache_bust = f"&_t={int(datetime.now().timestamp())}"
-    resp = requests.get(url + cache_bust, timeout=30)
+    resp = requests.get(url + "&_t=" + str(int(datetime.now().timestamp())), timeout=30)
     resp.raise_for_status()
-    text = resp.text.lstrip("﻿")                # strip BOM
+    text = resp.text.lstrip("﻿")
     lines = [l for l in text.splitlines() if l.strip().strip(",")]
     if not lines:
         return []
     return list(csv.DictReader(lines))
 
-
 def _parse_date(s):
-    """Parse date strings like '21-May-26', '21-May-2026'."""
     for fmt in ("%d-%b-%y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(str(s).strip(), fmt).date()
@@ -125,24 +118,23 @@ def _parse_date(s):
             pass
     return None
 
-
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_targets():
-    """Return dict of isp_code → {category: str}."""
     if not TARGETS_CSV_URL:
         return {}
     try:
         rows = _fetch_csv(TARGETS_CSV_URL)
     except Exception as e:
-        print(f"[Remarks] Targets fetch failed (non-fatal): {e}")
+        print("[Remarks] Targets fetch failed (non-fatal): " + str(e))
         return {}
     if not rows:
         return {}
     r0 = rows[0]
     k_code = _find_key(r0, "ISP Code", "ISPCode", "ISP_Code")
     k_cat  = _find_key(r0, "Store Category", "StoreCategory", "Category")
-    k_ret  = _find_key(r0, "Parent Retailer Name", "ParentRetailerName", "Retailer Name", "Retailer")
+    k_ret  = _find_key(r0, "Parent Retailer Name", "ParentRetailerName",
+                       "Retailer Name", "Retailer")
     out = {}
     for r in rows:
         code = (r.get(k_code) or "").strip() if k_code else ""
@@ -153,22 +145,16 @@ def load_targets():
             }
     return out
 
-
-def load_sales(today_date, targets):
-    """
-    Return (zero_list, noup_list) — each a list of ISD dicts for today,
-    sorted alphabetically by TSI Name then ISD Name.
-    """
+def load_sales(target_date, targets):
     if not SALES_CSV_URL:
         raise EnvironmentError("SALES_CSV_URL is not set")
-
     rows = _fetch_csv(SALES_CSV_URL)
     if not rows:
         print("[Remarks] Sales CSV returned no rows.")
         return [], []
 
     r0 = rows[0]
-    def k(*cands): return _find_key(r0, *cands)
+    def k(*c): return _find_key(r0, *c)
 
     k_code   = k("ISP Code",             "ISPCode")
     k_name   = k("ISP Name",             "ISPName")
@@ -177,29 +163,25 @@ def load_sales(today_date, targets):
     k_ret    = k("Parent Retailer Name", "ParentRetailerName", "Retailer", "Store")
     k_city   = k("City")
     k_state  = k("State")
-    k_date   = k("Date",  "Sale Date",   "SaleDate")
-    k_status = k("Status","Sale Status", "SaleStatus")
+    k_date   = k("Date", "Sale Date",    "SaleDate")
+    k_status = k("Status", "Sale Status","SaleStatus")
 
     def g(r, key): return (r.get(key) or "").strip() if key else ""
 
     zero, noup = {}, {}
     for r in rows:
-        if _parse_date(g(r, k_date)) != today_date:
+        if _parse_date(g(r, k_date)) != target_date:
             continue
         code   = g(r, k_code)
         status = g(r, k_status)
         if not code:
             continue
-        tgt = targets.get(code, {})
-        retailer = g(r, k_ret) or tgt.get("retailer", "")  # sales first, targets as fallback
+        tgt      = targets.get(code, {})
+        retailer = g(r, k_ret) or tgt.get("retailer", "")
         isd = dict(
-            code=code,
-            name=g(r, k_name),
-            tsi=g(r, k_tsi),
-            store_code=g(r, k_sc),
-            retailer=retailer,
-            city=g(r, k_city),
-            state=g(r, k_state),
+            code=code, name=g(r, k_name), tsi=g(r, k_tsi),
+            store_code=g(r, k_sc), retailer=retailer,
+            city=g(r, k_city), state=g(r, k_state),
             category=tgt.get("category", ""),
         )
         if status == "Zero Sale Uploaded":
@@ -207,11 +189,10 @@ def load_sales(today_date, targets):
         elif status == "Sale Not Uploaded":
             noup[code] = isd
 
-    sort_key = lambda x: (x["tsi"].lower(), x["name"].lower())
-    return sorted(zero.values(), key=sort_key), sorted(noup.values(), key=sort_key)
+    srt = lambda x: (x["tsi"].lower(), x["name"].lower())
+    return sorted(zero.values(), key=srt), sorted(noup.values(), key=srt)
 
-
-# ── Google API auth ───────────────────────────────────────────────────────────
+# ── Google auth ───────────────────────────────────────────────────────────────
 
 def get_creds():
     return Credentials(
@@ -220,44 +201,30 @@ def get_creds():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        # No scopes here — passing scopes causes the refresh request to
-        # include them explicitly, and Google rejects it if they don't match
-        # exactly what the token was originally authorized for.
-        # Omitting scopes lets Google use whatever was authorized at token creation.
+        # No scopes kwarg — lets Google use whatever was originally authorized
     )
-
 
 # ── Drive helpers ─────────────────────────────────────────────────────────────
 
 def find_or_create_remarks_file(drv, svc, folder_id):
-    """Return the Sheets file id, creating the file if it doesn't exist yet."""
-    safe_name = REMARKS_FILE_NAME.replace("'", "\\'")
-    q = (
-        f"'{folder_id}' in parents "
-        f"and mimeType='application/vnd.google-apps.spreadsheet' "
-        f"and name='{safe_name}' "
-        f"and trashed=false"
-    )
+    safe = REMARKS_FILE_NAME.replace("'", "\\'")
+    q = (f"'{folder_id}' in parents "
+         f"and mimeType='application/vnd.google-apps.spreadsheet' "
+         f"and name='{safe}' and trashed=false")
     files = drv.files().list(q=q, fields="files(id,name)").execute().get("files", [])
     if files:
-        print(f"[Remarks] Found existing file id={files[0]['id']}")
+        print("[Remarks] Found existing file id=" + files[0]["id"])
         return files[0]["id"]
-
-    # Create brand-new file
     f = drv.files().create(
-        body={
-            "name": REMARKS_FILE_NAME,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [folder_id],
-        },
+        body={"name": REMARKS_FILE_NAME,
+              "mimeType": "application/vnd.google-apps.spreadsheet",
+              "parents": [folder_id]},
         fields="id",
     ).execute()
-    print(f"[Remarks] Created new Remarks file id={f['id']}")
+    print("[Remarks] Created new file id=" + f["id"])
     return f["id"]
 
-
 def delete_tab_if_exists(svc, file_id, tab_name):
-    """Delete a sheet tab by name if present (full-refresh strategy)."""
     sheets = svc.spreadsheets().get(spreadsheetId=file_id).execute().get("sheets", [])
     for s in sheets:
         if s["properties"]["title"] == tab_name:
@@ -266,12 +233,10 @@ def delete_tab_if_exists(svc, file_id, tab_name):
                 spreadsheetId=file_id,
                 body={"requests": [{"deleteSheet": {"sheetId": sid}}]},
             ).execute()
-            print(f'[Remarks] Deleted existing tab "{tab_name}"')
+            print("[Remarks] Deleted existing tab: " + tab_name)
             return
 
-
 def delete_default_sheet(svc, file_id):
-    """Remove the auto-created 'Sheet1' tab if other tabs now exist."""
     sheets = svc.spreadsheets().get(spreadsheetId=file_id).execute().get("sheets", [])
     if len(sheets) <= 1:
         return
@@ -281,293 +246,293 @@ def delete_default_sheet(svc, file_id):
                 spreadsheetId=file_id,
                 body={"requests": [{"deleteSheet": {"sheetId": s["properties"]["sheetId"]}}]},
             ).execute()
-            print("[Remarks] Cleaned up default 'Sheet1' tab")
+            print("[Remarks] Cleaned up default Sheet1")
             break
 
+# ── Sharing & column protection ───────────────────────────────────────────────
+
+def get_owner_email(creds):
+    """Return the email of the authenticated Google account."""
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": "Bearer " + (creds.token or "")},
+            timeout=10,
+        )
+        return resp.json().get("email", "")
+    except Exception as e:
+        print("[Remarks] Could not get owner email (protection skipped): " + str(e))
+        return ""
+
+def share_with_tsis(drv, file_id, emails):
+    """
+    Share the file with each email as editor (writer role).
+    Idempotent — silently skips if already shared.
+    No notification email sent (avoids spamming TSIs on every daily run).
+    """
+    for email in emails:
+        try:
+            drv.permissions().create(
+                fileId=file_id,
+                body={"type": "user", "role": "writer", "emailAddress": email},
+                sendNotificationEmail=False,
+            ).execute()
+            print("[Remarks] Shared with " + email)
+        except Exception as e:
+            print("[Remarks] Share " + email + " skipped (likely already has access): " + str(e))
+
+def protect_tab_columns(svc, file_id, sheet_id, owner_email):
+    """
+    Lock all columns on this tab EXCEPT column I (index 8, Remarks).
+    Only owner_email can edit the locked columns.
+    TSI editors (added via share_with_tsis) can only edit the unprotected column I.
+
+    Two protected ranges:
+      - Columns A-H  (startColumnIndex 0, endColumnIndex 8)
+      - Columns J-Z  (startColumnIndex 9, endColumnIndex 26)
+    Column I (index 8) is left unprotected intentionally.
+    """
+    if not owner_email:
+        print("[Remarks] Skipping column protection — owner email not available")
+        return
+
+    editors = {"users": [owner_email], "domainUsersCanEdit": False}
+    reqs = [
+        {"addProtectedRange": {"protectedRange": {
+            "range": {"sheetId": sheet_id,
+                      "startColumnIndex": 0, "endColumnIndex": 8},
+            "description": "Locked - owner edit only",
+            "warningOnly": False,
+            "editors": editors,
+        }}},
+        {"addProtectedRange": {"protectedRange": {
+            "range": {"sheetId": sheet_id,
+                      "startColumnIndex": 9, "endColumnIndex": 26},
+            "description": "Locked - owner edit only",
+            "warningOnly": False,
+            "editors": editors,
+        }}},
+    ]
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=file_id, body={"requests": reqs}
+    ).execute()
+    print("[Remarks] Column protection applied — column I (Remarks) is editable by TSIs")
 
 # ── Sheet content builder ─────────────────────────────────────────────────────
 
 class _Builder:
-    """
-    Accumulates cell values and Sheets API batchUpdate format requests.
-    sheet_id is injected after the tab is created (starts as placeholder 0).
-    """
-
     def __init__(self):
-        self.values = []        # list[list[str]]
-        self.requests = []      # batchUpdate request dicts
-        self._sid = 0           # sheetId placeholder
+        self.values   = []
+        self.requests = []
+        self._sid     = 0
 
-    # ── Row helpers ──────────────────────────────────────────────────────────
-
-    def _r(self):
-        """Current next row index (0-based)."""
-        return len(self.values)
+    def _r(self): return len(self.values)
 
     def _add(self, cells):
         padded = list(cells) + [""] * max(0, N - len(cells))
         self.values.append(padded[:N])
 
-    # ── Format / merge helpers ───────────────────────────────────────────────
-
     def _fmt(self, r1, c1, r2, c2, **kw):
         uf = {}
-        if "bg"    in kw: uf["backgroundColor"] = kw["bg"]
+        if "bg"     in kw: uf["backgroundColor"]    = kw["bg"]
         if "halign" in kw: uf["horizontalAlignment"] = kw["halign"]
-        if "valign" in kw: uf["verticalAlignment"]   = kw["valign"]
         if "wrap"   in kw: uf["wrapStrategy"] = "WRAP" if kw["wrap"] else "OVERFLOW_CELL"
-
         tf = {}
         if "bold"   in kw: tf["bold"]            = kw["bold"]
         if "italic" in kw: tf["italic"]          = kw["italic"]
         if "fg"     in kw: tf["foregroundColor"] = kw["fg"]
         if "size"   in kw: tf["fontSize"]        = kw["size"]
-        if tf:
-            uf["textFormat"] = tf
-
-        if not uf:
-            return
-
-        self.requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": self._sid,
-                    "startRowIndex": r1, "endRowIndex": r2,
-                    "startColumnIndex": c1, "endColumnIndex": c2,
-                },
-                "cell": {"userEnteredFormat": uf},
-                "fields": "userEnteredFormat(" + ",".join(uf.keys()) + ")",
-            }
-        })
+        if tf: uf["textFormat"] = tf
+        if not uf: return
+        self.requests.append({"repeatCell": {
+            "range": {"sheetId": self._sid,
+                      "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2},
+            "cell": {"userEnteredFormat": uf},
+            "fields": "userEnteredFormat(" + ",".join(uf.keys()) + ")",
+        }})
 
     def _merge(self, r1, c1, r2, c2):
-        self.requests.append({
-            "mergeCells": {
-                "range": {
-                    "sheetId": self._sid,
-                    "startRowIndex": r1, "endRowIndex": r2,
-                    "startColumnIndex": c1, "endColumnIndex": c2,
-                },
-                "mergeType": "MERGE_ALL",
-            }
-        })
-
-    # ── Compound block helpers ───────────────────────────────────────────────
+        self.requests.append({"mergeCells": {
+            "range": {"sheetId": self._sid,
+                      "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2},
+            "mergeType": "MERGE_ALL",
+        }})
 
     def _section_header(self, text, color):
         row = self._r()
         self._add([text])
-        self._fmt(row, 0, row + 1, N, bg=color, bold=True, fg=C_WHITE_TEXT, size=11)
-        self._merge(row, 0, row + 1, N)
+        self._fmt(row, 0, row+1, N, bg=color, bold=True, fg=C_WHITE_TEXT, size=11)
+        self._merge(row, 0, row+1, N)
 
     def _col_headers(self):
         row = self._r()
         self._add(COLS)
-        self._fmt(row, 0, row + 1, N, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT, size=10)
+        self._fmt(row, 0, row+1, N, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT, size=10)
 
     def _data_rows(self, isds, alt_bg):
         for i, isd in enumerate(isds):
             row = self._r()
-            self._add([
-                isd["tsi"], isd["code"], isd["name"], isd["store_code"],
-                isd["retailer"], isd["city"], isd["state"], isd["category"], "",
-            ])
+            self._add([isd["tsi"], isd["code"], isd["name"], isd["store_code"],
+                       isd["retailer"], isd["city"], isd["state"], isd["category"], ""])
             bg = alt_bg if i % 2 == 0 else C_WHITE
-            self._fmt(row, 0, row + 1, N - 1, bg=bg)               # data cells
-            self._fmt(row, N - 1, row + 1, N, bg=C_REMARKS, wrap=True)  # Remarks cell
+            self._fmt(row, 0, row+1, N-1, bg=bg)
+            self._fmt(row, N-1, row+1, N, bg=C_REMARKS, wrap=True)
 
     def _tsi_remarks_block(self, isds, title, alt_bg):
-        """
-        Writes the 'TSI Remarks' block at the end of a section:
-          • sub-header row
-          • column-header row (TSI Name | Overall Remarks)
-          • one editable row per unique TSI
-        """
-        # blank separator
         self._add([])
-
-        # block header
         row = self._r()
         self._add([title])
-        self._fmt(row, 0, row + 1, N, bg=C_TSI_HDR, bold=True, size=10)
-        self._merge(row, 0, row + 1, N)
-
-        # column headers
+        self._fmt(row, 0, row+1, N, bg=C_TSI_HDR, bold=True, size=10)
+        self._merge(row, 0, row+1, N)
         row = self._r()
-        self._add(["TSI Name", "Overall Remarks"] + [""] * (N - 2))
-        self._fmt(row, 0, row + 1, 1, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT)
-        self._fmt(row, 1, row + 1, N, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT)
-
-        # one editable row per unique TSI (in the order they appear, i.e. alpha)
-        seen = list(dict.fromkeys(isd["tsi"] for isd in isds))  # deduplicated, ordered
-        if not seen:
-            seen = ["—"]
+        self._add(["TSI Name", "Overall Remarks"] + [""]*(N-2))
+        self._fmt(row, 0, row+1, 1, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT)
+        self._fmt(row, 1, row+1, N, bg=C_COL_HDR, bold=True, fg=C_GRAY_TEXT)
+        seen = list(dict.fromkeys(isd["tsi"] for isd in isds)) or ["--"]
         for tsi in seen:
             row = self._r()
-            self._add([tsi, ""] + [""] * (N - 2))
-            self._fmt(row, 0, row + 1, 1, bg=alt_bg, bold=True)
-            self._fmt(row, 1, row + 1, N, bg=C_REMARKS, wrap=True)
+            self._add([tsi, ""] + [""]*(N-2))
+            self._fmt(row, 0, row+1, 1, bg=alt_bg, bold=True)
+            self._fmt(row, 1, row+1, N, bg=C_REMARKS, wrap=True)
 
-    # ── Main builder ─────────────────────────────────────────────────────────
-
-    def build(self, zero_list, noup_list, tab_name, today_date):
-        # ── Title row ────────────────────────────────────────────────────────
-        title = (
-            f"Zero Sale & No Sales Upload  —  Remarks Tracker"
-            f"     |     {tab_name} {today_date.year}"
-        )
+    def build(self, zero_list, noup_list, tab_name, target_date):
+        # Title
+        title = ("Zero Sale & No Sales Upload  --  Remarks Tracker"
+                 "     |     " + tab_name + " " + str(target_date.year))
         row = self._r()
         self._add([title])
-        self._fmt(row, 0, row + 1, N,
-                  bg=C_MOTO_RED, bold=True, fg=C_WHITE_TEXT, size=13, halign="CENTER")
-        self._merge(row, 0, row + 1, N)
-        self._add([])   # blank spacer
+        self._fmt(row, 0, row+1, N, bg=C_MOTO_RED, bold=True,
+                  fg=C_WHITE_TEXT, size=13, halign="CENTER")
+        self._merge(row, 0, row+1, N)
+        self._add([])
 
-        # ─────────────────────────────────────────────────────────────────────
-        # SECTION A — Zero Sale ISDs
-        # ─────────────────────────────────────────────────────────────────────
+        # Section A — Zero Sale
         cnt_z = len(zero_list)
         self._section_header(
-            f"⚠   ZERO SALE ISDs   ({cnt_z} ISD{'s' if cnt_z != 1 else ''})",
-            C_ORANGE_SEC,
-        )
+            "  ZERO SALE ISDs   (" + str(cnt_z) + " ISD" + ("s" if cnt_z != 1 else "") + ")",
+            C_ORANGE_SEC)
         self._col_headers()
-
         if zero_list:
             self._data_rows(zero_list, C_ORANGE_ALT)
         else:
             row = self._r()
             self._add(["No Zero Sale ISDs recorded for this date."])
-            self._fmt(row, 0, row + 1, N, italic=True, fg=C_GRAY_TEXT)
+            self._fmt(row, 0, row+1, N, italic=True, fg=C_GRAY_TEXT)
+        self._tsi_remarks_block(zero_list, "TSI Remarks -- Zero Sale ISDs", C_ORANGE_ALT)
 
-        self._tsi_remarks_block(
-            zero_list, "TSI Remarks — Zero Sale ISDs", C_ORANGE_ALT
-        )
+        self._add([]); self._add([]); self._add([])   # 3 blank separator rows
 
-        # 3 blank rows between sections
-        self._add([])
-        self._add([])
-        self._add([])
-
-        # ─────────────────────────────────────────────────────────────────────
-        # SECTION B — No Sales Upload ISDs
-        # ─────────────────────────────────────────────────────────────────────
+        # Section B — No Sales Upload
         cnt_n = len(noup_list)
         self._section_header(
-            f"🚫   NO SALES UPLOAD ISDs   ({cnt_n} ISD{'s' if cnt_n != 1 else ''})",
-            C_RED_SEC,
-        )
+            "  NO SALES UPLOAD ISDs   (" + str(cnt_n) + " ISD" + ("s" if cnt_n != 1 else "") + ")",
+            C_RED_SEC)
         self._col_headers()
-
         if noup_list:
             self._data_rows(noup_list, C_RED_ALT)
         else:
             row = self._r()
             self._add(["No No-Upload ISDs recorded for this date."])
-            self._fmt(row, 0, row + 1, N, italic=True, fg=C_GRAY_TEXT)
-
-        self._tsi_remarks_block(
-            noup_list, "TSI Remarks — No Sales Upload ISDs", C_RED_ALT
-        )
+            self._fmt(row, 0, row+1, N, italic=True, fg=C_GRAY_TEXT)
+        self._tsi_remarks_block(noup_list, "TSI Remarks -- No Sales Upload ISDs", C_RED_ALT)
 
         return self.values, self.requests
 
-
 # ── Tab writer ────────────────────────────────────────────────────────────────
 
-def write_tab(svc, file_id, tab_name, zero_list, noup_list, today_date):
-    """Create a new sheet tab, populate values, and apply all formatting."""
-
-    # 1. Create the new sheet tab
+def write_tab(svc, file_id, tab_name, zero_list, noup_list, target_date, owner_email=""):
+    # Create sheet tab
     resp = svc.spreadsheets().batchUpdate(
         spreadsheetId=file_id,
         body={"requests": [{"addSheet": {"properties": {
             "title": tab_name,
-            "gridProperties": {"rowCount": 600, "columnCount": N + 1},
+            "gridProperties": {"rowCount": 600, "columnCount": N+1},
         }}}]},
     ).execute()
     sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-    # 2. Build content
+    # Build content
     builder = _Builder()
     builder._sid = sheet_id
-    values, fmt_reqs = builder.build(zero_list, noup_list, tab_name, today_date)
+    values, fmt_reqs = builder.build(zero_list, noup_list, tab_name, target_date)
 
-    # 3. Write cell values
+    # Write values
     svc.spreadsheets().values().update(
         spreadsheetId=file_id,
-        range=f"'{tab_name}'!A1",
+        range="'" + tab_name + "'!A1",
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
 
-    # 4. Column widths (px): TSI, Code, ISD Name, StoreCode, Retailer, City, State, Cat, Remarks
+    # Column widths: TSI, Code, ISD Name, StoreCode, Retailer, City, State, Cat, Remarks
     col_px = [145, 90, 165, 90, 185, 90, 90, 80, 245]
-    dim_reqs = [
-        {"updateDimensionProperties": {
-            "range": {
-                "sheetId": sheet_id, "dimension": "COLUMNS",
-                "startIndex": i, "endIndex": i + 1,
-            },
-            "properties": {"pixelSize": px},
-            "fields": "pixelSize",
-        }}
-        for i, px in enumerate(col_px)
-    ]
+    dim_reqs = [{"updateDimensionProperties": {
+        "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                  "startIndex": i, "endIndex": i+1},
+        "properties": {"pixelSize": px}, "fields": "pixelSize",
+    }} for i, px in enumerate(col_px)]
 
-    # 5. Freeze first row (title)
     freeze_req = [{"updateSheetProperties": {
-        "properties": {
-            "sheetId": sheet_id,
-            "gridProperties": {"frozenRowCount": 1},
-        },
+        "properties": {"sheetId": sheet_id,
+                       "gridProperties": {"frozenRowCount": 1}},
         "fields": "gridProperties.frozenRowCount",
     }}]
 
-    # 6. Apply formatting + dimensions + freeze in one batch
     svc.spreadsheets().batchUpdate(
         spreadsheetId=file_id,
         body={"requests": fmt_reqs + dim_reqs + freeze_req},
     ).execute()
 
-    total_rows = len(values)
-    print(
-        f'[Remarks] Written tab "{tab_name}": '
-        f"{len(zero_list)} zero-sale ISDs, {len(noup_list)} no-upload ISDs "
-        f"({total_rows} rows total)"
-    )
+    print("[Remarks] Written tab '" + tab_name + "': "
+          + str(len(zero_list)) + " zero-sale, "
+          + str(len(noup_list)) + " no-upload ISDs ("
+          + str(len(values)) + " rows)")
 
+    # Lock all columns except column I (Remarks)
+    protect_tab_columns(svc, file_id, sheet_id, owner_email)
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    now_ist    = datetime.now(IST)
-    # Script runs at 12:03 PM IST the day AFTER the target date,
-    # so always derive data date as yesterday (IST).
-    target_dt   = now_ist - timedelta(days=1)
-    today_date  = target_dt.date()
+    now_ist     = datetime.now(IST)
+    target_dt   = now_ist - timedelta(days=1)   # always process yesterday
+    target_date = target_dt.date()
     tab         = tab_name_for(target_dt)
 
-    print(f"[Remarks] ── Starting run at {now_ist.strftime('%d-%b %H:%M IST')}  →  processing {today_date}  →  tab '{tab}' ──")
+    print("[Remarks] Run at " + now_ist.strftime("%d-%b %H:%M IST")
+          + " -> processing " + str(target_date)
+          + " -> tab '" + tab + "'")
 
     creds     = get_creds()
     drv       = build("drive",  "v3", credentials=creds)
     svc       = build("sheets", "v4", credentials=creds)
-    folder_id = os.environ["GDRIVE_FOLDER_ID"]
+    folder_id = os.environ["DRIVE_FOLDER_ID"]
 
-    # Load reference data
-    print("[Remarks] Fetching Targets CSV …")
+    print("[Remarks] Fetching Targets CSV...")
     targets = load_targets()
-    print(f"[Remarks] Targets loaded: {len(targets)} ISPs")
+    print("[Remarks] Targets loaded: " + str(len(targets)) + " ISPs")
 
-    print("[Remarks] Fetching Sales CSV …")
-    zero_list, noup_list = load_sales(today_date, targets)
-    print("[Remarks] Today flagged ISDs - Zero sale: " + str(len(zero_list)) + ", No upload: " + str(len(noup_list)))
+    print("[Remarks] Fetching Sales CSV...")
+    zero_list, noup_list = load_sales(target_date, targets)
+    print("[Remarks] Flagged ISDs - Zero sale: " + str(len(zero_list))
+          + ", No upload: " + str(len(noup_list)))
 
-    # Write to Drive
     file_id = find_or_create_remarks_file(drv, svc, folder_id)
+
+    # Share with TSI editors (idempotent)
+    if TSI_EDITOR_EMAILS:
+        share_with_tsis(drv, file_id, TSI_EDITOR_EMAILS)
+    else:
+        print("[Remarks] TSI_EDITOR_EMAILS is empty -- skipping share step")
+
+    # Get owner email for column protection
+    owner_email = get_owner_email(creds)
+    print("[Remarks] Owner email: " + (owner_email or "(not found)"))
+
     delete_tab_if_exists(svc, file_id, tab)
-    write_tab(svc, file_id, tab, zero_list, noup_list, today_date)
+    write_tab(svc, file_id, tab, zero_list, noup_list, target_date, owner_email)
     delete_default_sheet(svc, file_id)
 
     print("[Remarks] Complete. File id=" + file_id)
