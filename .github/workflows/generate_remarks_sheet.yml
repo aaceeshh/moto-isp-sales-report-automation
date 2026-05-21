@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/generate_remarks_sheet.yml
+#
+# Runs generate_remarks_sheet.py once a day at 23:57 IST (18:27 UTC).
+# Also triggerable manually via the "Run workflow" button in GitHub Actions.
+#
+# Secrets required (same as the main pipeline):
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, GDRIVE_FOLDER_ID
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Generate Daily Remarks Sheet
+
+on:
+  schedule:
+    # 12:03 PM IST  =  06:33 UTC
+    - cron: "33 6 * * *"
+  workflow_dispatch:      # allows manual trigger from the Actions tab
+
+jobs:
+  generate-remarks:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Install dependencies ──────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            requests
+
+      # ── 4. Run the script ────────────────────────────────────────────────
+      - name: Generate Remarks Sheet
+        env:
+          # OAuth credentials — stored as GitHub Secrets
+          GOOGLE_CLIENT_ID:     ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID:     ${{ secrets.GDRIVE_FOLDER_ID }}
+
+          # Published CSV URLs — already public, no need to be secrets
+          SALES_CSV_URL:   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSFtk8td43KgtjhjSIJWePY_WuHG9Xm_JJwtj5OGYZh2BMawqVudIJEICkfWNVWi-dWMfioCeK1R7tr/pub?output=csv"
+          TARGETS_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv"
+
+        run: python generate_remarks_sheet.py
