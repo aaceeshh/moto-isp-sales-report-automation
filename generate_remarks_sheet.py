@@ -142,12 +142,14 @@ def load_targets():
     r0 = rows[0]
     k_code = _find_key(r0, "ISP Code", "ISPCode", "ISP_Code")
     k_cat  = _find_key(r0, "Store Category", "StoreCategory", "Category")
+    k_ret  = _find_key(r0, "Parent Retailer Name", "ParentRetailerName", "Retailer Name", "Retailer")
     out = {}
     for r in rows:
         code = (r.get(k_code) or "").strip() if k_code else ""
         if code:
             out[code] = {
                 "category": (r.get(k_cat) or "").strip() if k_cat else "",
+                "retailer": (r.get(k_ret) or "").strip() if k_ret else "",
             }
     return out
 
@@ -189,12 +191,13 @@ def load_sales(today_date, targets):
         if not code:
             continue
         tgt = targets.get(code, {})
+        retailer = g(r, k_ret) or tgt.get("retailer", "")  # sales first, targets as fallback
         isd = dict(
             code=code,
             name=g(r, k_name),
             tsi=g(r, k_tsi),
             store_code=g(r, k_sc),
-            retailer=g(r, k_ret),
+            retailer=retailer,
             city=g(r, k_city),
             state=g(r, k_state),
             category=tgt.get("category", ""),
