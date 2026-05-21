@@ -37,6 +37,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 REMARKS_FILE_NAME = "Remarks Required for Zero & No Sales Upload"
 SALES_CSV_URL     = os.environ.get("SALES_CSV_URL",   "")
 TARGETS_CSV_URL   = os.environ.get("TARGETS_CSV_URL", "")
+WEEKOFF_CSV_URL   = os.environ.get("WEEKOFF_CSV_URL",  "")
 
 # TSI email addresses that get editor access to column I (Remarks) only.
 # Add / remove addresses here as your team changes.
@@ -144,7 +145,30 @@ def load_targets():
             }
     return out
 
-def load_sales(target_date, targets):
+def load_weekoff():
+    """Return dict of isp_code -> weekday name (e.g. {'MTRL1753': 'Thursday'})."""
+    if not WEEKOFF_CSV_URL:
+        return {}
+    try:
+        rows = _fetch_csv(WEEKOFF_CSV_URL)
+    except Exception as e:
+        print("[Remarks] WeekOff fetch failed (non-fatal): " + str(e))
+        return {}
+    if not rows:
+        return {}
+    r0 = rows[0]
+    k_code = _find_key(r0, "ISP Code", "ISPCode", "ISP_Code", "Code")
+    k_day  = _find_key(r0, "Week Off Day", "WeekOffDay", "WeekOff", "Off Day", "Day")
+    out = {}
+    for r in rows:
+        code = (r.get(k_code) or "").strip() if k_code else ""
+        day  = (r.get(k_day)  or "").strip() if k_day  else ""
+        if code and day:
+            out[code] = day
+    print("[Remarks] WeekOff loaded: " + str(len(out)) + " ISDs")
+    return out
+
+def load_sales(target_date, targets, weekoff):
     if not SALES_CSV_URL:
         raise EnvironmentError("SALES_CSV_URL is not set")
     rows = _fetch_csv(SALES_CSV_URL)
@@ -174,6 +198,12 @@ def load_sales(target_date, targets):
         code   = g(r, k_code)
         status = g(r, k_status)
         if not code:
+            continue
+        # Skip ISDs on their week-off day
+        _DAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        _target_day = _DAY_NAMES[target_date.weekday()]
+        _off = weekoff.get(code, "")
+        if _off and _off.lower() == _target_day.lower():
             continue
         tgt      = targets.get(code, {})
         retailer = g(r, k_ret) or tgt.get("retailer", "")
@@ -513,8 +543,11 @@ def main():
     targets = load_targets()
     print("[Remarks] Targets loaded: " + str(len(targets)) + " ISPs")
 
+    print("[Remarks] Fetching WeekOff CSV...")
+    weekoff = load_weekoff()
+
     print("[Remarks] Fetching Sales CSV...")
-    zero_list, noup_list = load_sales(target_date, targets)
+    zero_list, noup_list = load_sales(target_date, targets, weekoff)
     print("[Remarks] Flagged ISDs - Zero sale: " + str(len(zero_list))
           + ", No upload: " + str(len(noup_list)))
 
