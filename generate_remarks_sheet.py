@@ -217,9 +217,10 @@ def get_creds():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        scopes=[
-            "https://www.googleapis.com/auth/drive",   # covers Sheets API too
-        ],
+        # No scopes here — passing scopes causes the refresh request to
+        # include them explicitly, and Google rejects it if they don't match
+        # exactly what the token was originally authorized for.
+        # Omitting scopes lets Google use whatever was authorized at token creation.
     )
 
 
@@ -558,7 +559,7 @@ def main():
 
     print("[Remarks] Fetching Sales CSV …")
     zero_list, noup_list = load_sales(today_date, targets)
-    print(f"[Remarks] Today's flagged ISDs — Zero sale: {len(zero_list)}, No upload: {len(noup_list)}")
+    print("[Remarks] Today flagged ISDs - Zero sale: " + str(len(zero_list)) + ", No upload: " + str(len(noup_list)))
 
     # Write to Drive
     file_id = find_or_create_remarks_file(drv, svc, folder_id)
@@ -566,7 +567,7 @@ def main():
     write_tab(svc, file_id, tab, zero_list, noup_list, today_date)
     delete_default_sheet(svc, file_id)
 
-    print(f"[Remarks] ── Complete. File id={file_id} ──")
+    print("[Remarks] Complete. File id=" + file_id)
 
 
 if __name__ == "__main__":
