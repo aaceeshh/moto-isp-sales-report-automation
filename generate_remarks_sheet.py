@@ -108,6 +108,15 @@ def _fetch_csv(url):
     lines = [l for l in text.splitlines() if l.strip().strip(",")]
     if not lines:
         return []
+    # Some sheets carry a leading totals/spacer row above the real header
+    # (e.g. ",,,,,,,,,,,,1457.4,1350.9,..." in the Targets sheet). That row
+    # has values so the blank-row filter above keeps it. All feeds (Sales,
+    # Targets, WeekOff) carry an "ISP Code"/"ISPCode" column, so anchor on
+    # that to locate the true header row and drop anything above it.
+    for idx in range(min(5, len(lines))):
+        if re.search(r"isp\s*code", lines[idx], re.IGNORECASE):
+            lines = lines[idx:]
+            break
     return list(csv.DictReader(lines))
 
 def _parse_date(s):
