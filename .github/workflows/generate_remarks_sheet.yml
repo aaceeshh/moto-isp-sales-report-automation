@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .github/workflows/generate_remarks_sheet.yml
 #
-# Runs generate_remarks_sheet.py once a day at 23:57 IST (18:27 UTC).
+# Runs generate_remarks_sheet.py once a day at 02:00 AM IST (20:30 UTC).
 # Also triggerable manually via the "Run workflow" button in GitHub Actions.
 #
 # Secrets required (same as the main pipeline):
@@ -12,8 +12,8 @@ name: Generate Daily Remarks Sheet
 
 on:
   schedule:
-    # 12:03 PM IST  =  06:33 UTC
-    - cron: "33 6 * * *"
+    # 02:00 AM IST  =  20:30 UTC (previous calendar day)
+    - cron: "30 20 * * *"
   workflow_dispatch:      # allows manual trigger from the Actions tab
 
 jobs:
@@ -50,8 +50,8 @@ jobs:
           GDRIVE_FOLDER_ID:     ${{ secrets.DRIVE_FOLDER_ID }}
 
           # Published CSV URLs — already public, no need to be secrets
-          SALES_CSV_URL:   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSFtk8td43KgtjhjSIJWePY_WuHG9Xm_JJwtj5OGYZh2BMawqVudIJEICkfWNVWi-dWMfioCeK1R7tr/pub?output=csv"
-          TARGETS_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv"
+          SALES_CSV_URL:    "https://docs.google.com/spreadsheets/d/e/2PACX-1vSFtk8td43KgtjhjSIJWePY_WuHG9Xm_JJwtj5OGYZh2BMawqVudIJEICkfWNVWi-dWMfioCeK1R7tr/pub?output=csv"
+          TARGETS_CSV_URL:  "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv"
           WEEKOFF_CSV_URL:  "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?gid=1522547784&single=true&output=csv"
-          
+
         run: python generate_remarks_sheet.py
