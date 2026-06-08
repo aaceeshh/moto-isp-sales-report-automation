@@ -6,8 +6,9 @@ Zero Sale Uploaded + Sale Not Uploaded ISDs, and writes a formatted tab
 (named by date, e.g. "21st May") into a Google Sheets file called
 "Remarks Required for Zero & No Sales Upload" in the shared Drive folder.
 
-Runs at 12:03 PM IST — always processes the previous calendar day.
-Full refresh: existing tab for that date is deleted and recreated.
+Runs at 02:00 AM IST — always processes the previous calendar day.
+Skip-if-exists: if a tab for that date already exists it is left untouched,
+so any remarks TSIs have already entered are preserved (no overwrite).
 
 Column I (Remarks) is the only editable column for TSI editors.
 All other columns are locked via protected ranges (owner-only).
@@ -261,6 +262,11 @@ def find_or_create_remarks_file(drv, svc, folder_id):
     ).execute()
     print("[Remarks] Created new file id=" + f["id"])
     return f["id"]
+
+def tab_exists(svc, file_id, tab_name):
+    """Return True if a tab with this name already exists in the file."""
+    sheets = svc.spreadsheets().get(spreadsheetId=file_id).execute().get("sheets", [])
+    return any(s["properties"]["title"] == tab_name for s in sheets)
 
 def delete_tab_if_exists(svc, file_id, tab_name):
     sheets = svc.spreadsheets().get(spreadsheetId=file_id).execute().get("sheets", [])
@@ -568,11 +574,18 @@ def main():
     else:
         print("[Remarks] TSI_EDITOR_EMAILS is empty -- skipping share step")
 
+    # If a tab for this date already exists, do NOT rebuild it. This preserves
+    # any remarks TSIs have already entered — a re-run or a delayed/duplicate
+    # scheduled run will no longer wipe the day's sheet.
+    if tab_exists(svc, file_id, tab):
+        print("[Remarks] Tab '" + tab + "' already exists — skipping rebuild "
+              "to preserve existing remarks. File id=" + file_id)
+        return
+
     # Get owner email for column protection
     owner_email = get_owner_email(creds)
     print("[Remarks] Owner email: " + (owner_email or "(not found)"))
 
-    delete_tab_if_exists(svc, file_id, tab)
     write_tab(svc, file_id, tab, zero_list, noup_list, target_date, owner_email)
     delete_default_sheet(svc, file_id)
 
