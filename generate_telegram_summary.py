@@ -43,12 +43,16 @@ from datetime import datetime, timezone, timedelta, date
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-SALES_CSV_URL = os.environ.get("SALES_CSV_URL",
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vSFtk8td43KgtjhjSIJWePY_WuHG9Xm_JJwtj5OGYZh2BMawqVudIJEICkfWNVWi-dWMfioCeK1R7tr/pub?output=csv")
-TARGETS_CSV_URL = os.environ.get("TARGETS_CSV_URL",
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv")
-WEEKOFF_CSV_URL = os.environ.get("WEEKOFF_CSV_URL",
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?gid=1522547784&single=true&output=csv")
+# Public published CSVs (same feeds the dashboards use). We fall back to these
+# hardcoded URLs whenever the matching env var/secret is missing OR empty
+# (an unset GitHub secret arrives as an empty string, which would defeat a
+# plain os.environ.get(name, default) — hence the `or`).
+SALES_CSV_URL = os.environ.get("SALES_CSV_URL") or \
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vSFtk8td43KgtjhjSIJWePY_WuHG9Xm_JJwtj5OGYZh2BMawqVudIJEICkfWNVWi-dWMfioCeK1R7tr/pub?output=csv"
+TARGETS_CSV_URL = os.environ.get("TARGETS_CSV_URL") or \
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv"
+WEEKOFF_CSV_URL = os.environ.get("WEEKOFF_CSV_URL") or \
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?gid=1522547784&single=true&output=csv"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
