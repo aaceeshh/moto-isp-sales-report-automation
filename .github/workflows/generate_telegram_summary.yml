@@ -1,0 +1,27 @@
+name: Daily Telegram Summary (D-1)
+
+# Posts the end-of-day (D-1) sell-out + NPI + incentive summary to Telegram.
+# Runs at 12:01 AM IST daily. 12:01 AM IST = 18:31 UTC the previous day.
+# By 12:01 AM the last main-pipeline run (11:59 PM IST) has already loaded the
+# full previous day, so D-1 is complete.
+on:
+  workflow_dispatch:        # manual trigger (uses yesterday, or set TARGET_DATE below)
+  schedule:
+    - cron: '31 18 * * *'   # 12:01 AM IST (next day)
+
+jobs:
+  telegram-summary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Send daily Telegram summary
+        env:
+          SALES_CSV_URL:      ${{ secrets.SALES_CSV_URL }}
+          TARGETS_CSV_URL:    ${{ secrets.TARGETS_CSV_URL }}
+          WEEKOFF_CSV_URL:    ${{ secrets.WEEKOFF_CSV_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python generate_telegram_summary.py
