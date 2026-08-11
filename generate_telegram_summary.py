@@ -145,9 +145,35 @@ def esc(s):
     """Escape text for Telegram HTML parse_mode."""
     return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
-def loc(info):
-    parts = [p for p in (info.get("city"), info.get("state")) if p]
+STATE_ABBR = {
+    "west bengal": "WB", "bihar": "BR", "jharkhand": "JH", "odisha": "OD",
+    "orissa": "OD", "assam": "AS", "sikkim": "SK", "tripura": "TR",
+    "meghalaya": "ML", "manipur": "MN", "nagaland": "NL", "mizoram": "MZ",
+    "arunachal pradesh": "AR", "uttar pradesh": "UP", "jharkand": "JH",
+}
+CAT_ABBR = {"reliance digital": "RD"}
+
+def loc(info, short=False):
+    city = info.get("city") or ""
+    st   = info.get("state") or ""
+    if short and st:
+        st = STATE_ABBR.get(st.strip().lower(), st)
+    parts = [p for p in (city, st) if p]
     return ", ".join(parts)
+
+def catshort(cat):
+    return CAT_ABBR.get((cat or "").strip().lower(), cat or "—")
+
+def first(name):
+    return (name or "").split()[0] if (name or "").strip() else name
+
+def cr(v):
+    """Value in ₹ crore, 2 decimals."""
+    return v / 1_00_00_000
+
+def pre(lines):
+    """Wrap ASCII table lines in a Telegram <pre> monospace block."""
+    return "<pre>" + esc("\n".join(lines)) + "</pre>"
 
 # ── Data loading ───────────────────────────────────────────────────────────────
 
@@ -309,51 +335,62 @@ def compute(target_date):
 # ── Message builders ───────────────────────────────────────────────────────────
 
 def build_daily(target_date, codes, tc, agg, zero_codes, noup_codes):
-    hdr = target_date.strftime("%d-%b-%Y")
-    L = ["<b>\U0001F4CA Daily Sell-out Summary</b>",
-         "Date: <b>%s</b> (D-1)" % hdr, ""]
+    hdr = target_date.strftime("%d %b %Y")
     tot_t = tot_ftd = tot_mtd = 0.0
     tz = tn = 0
+    rows_val = ["%-8s %6s %5s %6s %4s" % ("(Cr)", "Target", "FTD", "MTD", "Ach")]
+    rows_gap = ["%-8s %5s %6s" % ("ISDs", "Zero", "NoUpld")]
     for t in TSIS:
-        cs = tc[t]
+        cs  = tc[t]
         tgt = sum(codes[c]["tgt"] for c in cs)
         ftd = sum(agg[c]["sellFTD"] for c in cs)
         mtd = sum(agg[c]["sellMTD"] for c in cs)
-        ach = pctf(mtd, tgt)
-        nz  = len(zero_codes[t])
-        nn  = len(noup_codes[t])
+        nz  = len(zero_codes[t]); nn = len(noup_codes[t])
         tot_t += tgt; tot_ftd += ftd; tot_mtd += mtd; tz += nz; tn += nn
-        L.append("<b>%s</b>" % t)
-        L.append("  Tgt %s | Sellout FTD %s / MTD %s" % (inr(tgt), inr(ftd), inr(mtd)))
-        L.append("  Ach %d%% | Zero-sale %d | No-upload %d" % (ach, nz, nn))
-        L.append("")
-    L.append("<b>Total</b> — Tgt %s | FTD %s / MTD %s | Ach %d%%"
-             % (inr(tot_t), inr(tot_ftd), inr(tot_mtd), pctf(tot_mtd, tot_t)))
-    L.append("Zero-sale %d | No-upload %d (week-off ISDs excluded)" % (tz, tn))
+        rows_val.append("%-8s %6.2f %5.2f %6.2f %3d%%"
+                        % (first(t), cr(tgt), cr(ftd), cr(mtd), pctf(mtd, tgt)))
+        rows_gap.append("%-8s %5d %6d" % (first(t), nz, nn))
+    rows_val.append("-" * 32)
+    rows_val.append("%-8s %6.2f %5.2f %6.2f %3d%%"
+                    % ("TOTAL", cr(tot_t), cr(tot_ftd), cr(tot_mtd), pctf(tot_mtd, tot_t)))
+    rows_gap.append("-" * 21)
+    rows_gap.append("%-8s %5d %6d" % ("TOTAL", tz, tn))
+
+    L = ["\U0001F4CA <b>DAILY SELL-OUT</b> — %s <i>(D-1)</i>" % hdr,
+         "━" * 20,
+         "Sell-out value, in ₹ crore:",
+         pre(rows_val),
+         "Upload gaps (week-off ISDs excluded):",
+         pre(rows_gap)]
     return "\n".join(L)
 
 def build_npi(target_date, codes, tc, agg):
-    L = ["<b>\U0001F4F1 NPI Tracker</b> — %s" % target_date.strftime("%d-%b-%Y"),
-         "<i>FTD / MTD units · % of ISDs participated (MTD)</i>", ""]
+    L = ["\U0001F4F1 <b>NPI TRACKER</b> — %s" % target_date.strftime("%d %b %Y"),
+         "━" * 20,
+         "<i>FTD &amp; MTD units · %ISD = share of the TSI's ISDs who sold it (MTD)</i>",
+         ""]
     for label, _ in NPI_MODELS:
-        L.append("<b>%s</b>" % label)
+        rows = ["%-8s %4s %4s %5s" % ("", "FTD", "MTD", "%ISD")]
         for t in TSIS:
             cs = tc[t]
             n = len(cs) or 1
-            ftd = sum(agg[c]["npiFTD"][label] for c in cs)
-            mtd = sum(agg[c]["npiMTD"][label] for c in cs)
+            ftd  = sum(agg[c]["npiFTD"][label] for c in cs)
+            mtd  = sum(agg[c]["npiMTD"][label] for c in cs)
             part = sum(1 for c in cs if agg[c]["npiMTD"][label] > 0)
-            L.append("  %s: %d / %d / %d%%" % (t, round(ftd), round(mtd), pctf(part, n)))
-        L.append("")
+            rows.append("%-8s %4d %4d %4d%%"
+                        % (first(t), round(ftd), round(mtd), pctf(part, n)))
+        L.append("<b>%s</b>" % label)
+        L.append(pre(rows))
     return "\n".join(L).rstrip()
 
 def _need(share, base):
     return int(math.ceil(share * base))
 
 def build_incentive(target_date, codes, tc, agg):
-    L = ["<b>\U0001F3C6 TSI Incentive Summary</b> — %s (Aug'26 scheme)"
-         % target_date.strftime("%d-%b-%Y"),
-         "<i>Parameter = Ach / Target : Ach%</i>", ""]
+    mark = lambda ok: "✅" if ok else "\U0001F538"   # ✅ achieved / 🔸 in progress
+    L = ["\U0001F3C6 <b>INCENTIVE TRACKER</b> — %s" % target_date.strftime("%d %b %Y"),
+         "<i>Aug'26 scheme · ✅ achieved · 🔸 in progress</i>",
+         "━" * 20, ""]
     for t in TSIS:
         cs   = tc[t]
         n    = len(cs)
@@ -361,21 +398,21 @@ def build_incentive(target_date, codes, tc, agg):
         fx   = [c for c in cs if codes[c]["fix"] == "Yes"]
         hc   = HC.get(t, 0)
 
-        # 1 Moto Things
+        # 1 Moto Things (5 units × ISDs)
         things = sum(agg[c]["things"] for c in cs)
         t_tgt  = 5 * n
 
-        # 2 RD Premium >=80% (>=70% of RD ISDs)
+        # 2 RD Premium ≥80% (≥70% of RD ISDs)
         rd_ok = sum(1 for c in rd if agg[c]["totVal"] > 0 and
                     agg[c]["premVal"] / agg[c]["totVal"] >= 0.8)
         rd_need = _need(0.7, len(rd))
         rd_prog = min(100, round(100 * (rd_ok / len(rd)) / 0.7)) if rd else 0
 
-        # 3 HC active by 20th (>=90% of sanctioned HC)
+        # 3 HC active by 20th (≥90% of sanctioned HC)
         act = sum(1 for c in cs if agg[c]["active"])
         hc_need = _need(0.9, hc)
 
-        # 4 Fixture Edge >=4 units (>=90% of fixture ISDs)
+        # 4 Fixture Edge ≥4 units (≥90% of fixture ISDs)
         fx_ok = sum(1 for c in fx if agg[c]["fixEdge"] >= 4)
         fx_need = _need(0.9, len(fx))
         fx_prog = min(100, round(100 * (fx_ok / len(fx)) / 0.9)) if fx else 0
@@ -385,7 +422,7 @@ def build_incentive(target_date, codes, tc, agg):
         sell    = sum(agg[c]["sellMTD"] for c in cs)
         so_pct  = round(100 * sell / tgt_sum) if tgt_sum else 0
 
-        # Boosters
+        # 6/7 Boosters
         b1_ok = sum(1 for c in cs if agg[c]["b9"] >= 5)
         b1_need = _need(0.75, n)
         b1_prog = min(100, round(100 * (b1_ok / n) / 0.75)) if n else 0
@@ -393,23 +430,25 @@ def build_incentive(target_date, codes, tc, agg):
         b2_need = _need(0.50, n)
         b2_prog = min(100, round(100 * (b2_ok / n) / 0.50)) if n else 0
 
-        L.append("<b>%s</b> · %d ISDs · %d RD · %d fixture · HC %d"
-                 % (t, n, len(rd), len(fx), hc))
-        L.append("  1 Moto Things: %d / %d : %d%%" % (round(things), t_tgt, pctf(things, t_tgt)))
-        L.append("  2 RD Premium ≥80%%: %d / %d ISDs : %d%% (need 70%%)"
-                 % (rd_ok, rd_need, rd_prog))
-        L.append("  3 HC active by 20th: %d / %d : %d%%" % (act, hc_need, pctf(act, hc_need)))
-        L.append("  4 Fixture Edge ≥4: %d / %d ISDs : %d%% (need 90%%)"
-                 % (fx_ok, fx_need, fx_prog))
-        L.append("  5 Sell-out: %s / %s : %d%% (₹3k@90%%, ₹4k@100%%)"
-                 % (inr(sell), inr(tgt_sum), so_pct))
-        L.append("  6 Booster1 (≥5 by 09 Aug): %d / %d ISDs : %d%% (need 75%%)"
-                 % (b1_ok, b1_need, b1_prog))
-        L.append("  7 Booster2 (≥15 by 16 Aug): %d / %d ISDs : %d%% (need 50%%)"
-                 % (b2_ok, b2_need, b2_prog))
+        L.append("\U0001F464 <b>%s</b>" % t)
+        L.append("<i>%d ISDs · %d RD · %d fixture · HC %d</i>" % (n, len(rd), len(fx), hc))
+        L.append("%s Moto Things — %d / %d units (%d%%)"
+                 % (mark(things >= t_tgt), round(things), t_tgt, pctf(things, t_tgt)))
+        L.append("%s RD Premium ≥80%% — %d / %d ISDs (%d%%, need 70%%)"
+                 % (mark(rd_prog >= 100), rd_ok, rd_need, rd_prog))
+        L.append("%s HC active by 20th — %d / %d (%d%%)"
+                 % (mark(act >= hc_need), act, hc_need, pctf(act, hc_need)))
+        L.append("%s Fixture Edge ≥4u — %d / %d ISDs (%d%%, need 90%%)"
+                 % (mark(fx_prog >= 100), fx_ok, fx_need, fx_prog))
+        L.append("%s Sell-out value — %d%% of target (₹3k@90%%, ₹4k@100%%)"
+                 % (mark(so_pct >= 90), so_pct))
+        L.append("%s Booster-1 ≥5u by 09 Aug — %d / %d ISDs (%d%%, need 75%%)"
+                 % (mark(b1_prog >= 100), b1_ok, b1_need, b1_prog))
+        L.append("%s Booster-2 ≥15u by 16 Aug — %d / %d ISDs (%d%%, need 50%%)"
+                 % (mark(b2_prog >= 100), b2_ok, b2_need, b2_prog))
         L.append("")
-    L.append("<i>For internal reference only — payout subject to activation "
-             "&amp; clearance of all eligibility criteria.</i>")
+    L.append("<i>Internal reference only — payout subject to activation &amp; "
+             "clearance of all eligibility criteria.</i>")
     return "\n".join(L)
 
 def build_isd_lists(target_date, codes, zero_codes, noup_codes):
@@ -417,33 +456,32 @@ def build_isd_lists(target_date, codes, zero_codes, noup_codes):
 
     Returns a list of message strings (one per TSI, in TSIS order).
     """
-    hdr = target_date.strftime("%d-%b-%Y")
+    hdr = target_date.strftime("%d %b %Y")
 
     def rows_for(cset):
-        # Sort by ISD name for a stable, readable order.
+        # Sort by ISD name for a stable, readable order; two lines per ISD.
         out = []
-        for c in sorted(cset, key=lambda x: codes[x]["isd"].lower()):
+        for idx, c in enumerate(sorted(cset, key=lambda x: codes[x]["isd"].lower()), 1):
             i = codes[c]
-            out.append("• %s - %s - %s - %s" % (
-                esc(i["isd"]) or "—",
-                esc(i["store"]) or "—",
-                esc(loc(i)) or "—",
-                esc(i["cat"]) or "—",
-            ))
+            out.append("%d. <b>%s</b> · %s" % (idx, esc(i["isd"]) or "—",
+                                               esc(catshort(i["cat"]))))
+            out.append("    %s · %s" % (esc(i["store"]) or "—",
+                                        esc(loc(i, short=True)) or "—"))
         return out
 
     msgs = []
     for t in TSIS:
         zr = rows_for(zero_codes[t])
         nu = rows_for(noup_codes[t])
-        L = ["<b>\U0001F4CB %s</b>" % esc(t),
-             "ISD Exceptions · %s (D-1)" % hdr,
-             "<i>ISD Name - Store Name - Location - Category</i>", ""]
-        L.append("<b>Zero Sales Upload ISDs (%d)</b>" % len(zr))
-        L += (zr if zr else ["<i>None</i>"])
+        L = ["\U0001F4CB <b>%s</b> — ISD Exceptions" % esc(t),
+             "%s <i>(D-1)</i>" % hdr,
+             "<i>Name · Category / Store · Location</i>",
+             "━" * 20, ""]
+        L.append("\U0001F534 <b>ZERO SALES UPLOAD (%d)</b>" % (len(zr) // 2))
+        L += (zr if zr else ["<i>None 🎉</i>"])
         L.append("")
-        L.append("<b>No Sales Upload ISDs (%d)</b>" % len(nu))
-        L += (nu if nu else ["<i>None</i>"])
+        L.append("\U0001F7E0 <b>NO SALES UPLOAD (%d)</b>" % (len(nu) // 2))
+        L += (nu if nu else ["<i>None 🎉</i>"])
         L.append("")
         L.append("<i>Week-off ISDs excluded.</i>")
         msgs.append("\n".join(L))
