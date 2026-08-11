@@ -141,6 +141,14 @@ def inr(v):
 def pctf(a, b):
     return round(100 * a / b) if b > 0 else 0
 
+def esc(s):
+    """Escape text for Telegram HTML parse_mode."""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+def loc(info):
+    parts = [p for p in (info.get("city"), info.get("state")) if p]
+    return ", ".join(parts)
+
 # ── Data loading ───────────────────────────────────────────────────────────────
 
 def load_codes():
@@ -153,17 +161,23 @@ def load_codes():
     kCat = find_key(r0, "Store Category", "Category")
     kFix = find_key(r0, "Fixture Store(Y/N)", "Fixture Store", "Fixture")
     kTgt = find_key(r0, "Aug'26 TGT", "Aug'26 Target", "Aug26 TGT")
+    kStr = find_key(r0, "Parent Retailer Name", "Store Name", "Retailer Name")
+    kCty = find_key(r0, "City")
+    kSt  = find_key(r0, "State")
     codes = {}
     for r in rows:
         c = (r.get(kC) or "").strip()
         if not c or c in codes:
             continue
         codes[c] = {
-            "tsi": rmp(r.get(kT)),
-            "isd": (r.get(kN) or "").strip(),
-            "cat": (r.get(kCat) or "").strip(),
-            "fix": (r.get(kFix) or "").strip(),
-            "tgt": num(r.get(kTgt)),
+            "tsi":   rmp(r.get(kT)),
+            "isd":   (r.get(kN) or "").strip(),
+            "cat":   (r.get(kCat) or "").strip(),
+            "fix":   (r.get(kFix) or "").strip(),
+            "tgt":   num(r.get(kTgt)),
+            "store": (r.get(kStr) or "").strip() if kStr else "",
+            "city":  (r.get(kCty) or "").strip() if kCty else "",
+            "state": (r.get(kSt)  or "").strip() if kSt  else "",
         }
     return codes
 
@@ -398,6 +412,43 @@ def build_incentive(target_date, codes, tc, agg):
              "&amp; clearance of all eligibility criteria.</i>")
     return "\n".join(L)
 
+def build_isd_lists(target_date, codes, zero_codes, noup_codes):
+    """One message per TSI: Zero-sale and No-upload ISDs with full details.
+
+    Returns a list of message strings (one per TSI, in TSIS order).
+    """
+    hdr = target_date.strftime("%d-%b-%Y")
+
+    def rows_for(cset):
+        # Sort by ISD name for a stable, readable order.
+        out = []
+        for c in sorted(cset, key=lambda x: codes[x]["isd"].lower()):
+            i = codes[c]
+            out.append("• %s - %s - %s - %s" % (
+                esc(i["isd"]) or "—",
+                esc(i["store"]) or "—",
+                esc(loc(i)) or "—",
+                esc(i["cat"]) or "—",
+            ))
+        return out
+
+    msgs = []
+    for t in TSIS:
+        zr = rows_for(zero_codes[t])
+        nu = rows_for(noup_codes[t])
+        L = ["<b>\U0001F4CB %s</b>" % esc(t),
+             "ISD Exceptions · %s (D-1)" % hdr,
+             "<i>ISD Name - Store Name - Location - Category</i>", ""]
+        L.append("<b>Zero Sales Upload ISDs (%d)</b>" % len(zr))
+        L += (zr if zr else ["<i>None</i>"])
+        L.append("")
+        L.append("<b>No Sales Upload ISDs (%d)</b>" % len(nu))
+        L += (nu if nu else ["<i>None</i>"])
+        L.append("")
+        L.append("<i>Week-off ISDs excluded.</i>")
+        msgs.append("\n".join(L))
+    return msgs
+
 # ── Telegram ───────────────────────────────────────────────────────────────────
 
 def send_telegram(text):
@@ -442,10 +493,13 @@ def main():
     daily     = build_daily(target_date, codes, tc, agg, zero_codes, noup_codes)
     npi       = build_npi(target_date, codes, tc, agg)
     incentive = build_incentive(target_date, codes, tc, agg)
+    isd_lists = build_isd_lists(target_date, codes, zero_codes, noup_codes)
 
     send_telegram(daily)
     send_telegram(npi)
     send_telegram(incentive)
+    for msg in isd_lists:          # one message per TSI (4 total)
+        send_telegram(msg)
     print("[TG] Done.")
 
 
