@@ -38,7 +38,10 @@ IST = timezone(timedelta(hours=5, minutes=30))
 REMARKS_FILE_NAME = "Remarks Required for Zero & No Sales Upload"
 SALES_CSV_URL     = os.environ.get("SALES_CSV_URL",   "")
 TARGETS_CSV_URL   = os.environ.get("TARGETS_CSV_URL", "")
-WEEKOFF_CSV_URL   = os.environ.get("WEEKOFF_CSV_URL",  "")
+# App-owned Attendance Tracker · WeekOff Log tab (date-stamped attendance log).
+# Env override still wins; update the WEEKOFF_CSV_URL secret to this to be safe.
+WEEKOFF_CSV_URL   = os.environ.get("WEEKOFF_CSV_URL") or \
+    "https://docs.google.com/spreadsheets/d/1BsShTlrnwYGBUKMcURMI1Qla-pnttWFrPbMmiLNu6Eo/export?format=csv&gid=1706495387"
 
 # TSI email addresses that get editor access to column I (Remarks) only.
 # Add / remove addresses here as your team changes.
@@ -130,6 +133,13 @@ def _parse_date(s):
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
+# Reassigned / stale TSI names -> canonical TSI (mirrors the dashboard + other
+# pipelines). Strips a trailing "-RD" before matching.
+REMAP = {"saroj kumar rana": "Amit Kumar", "uday kumar tiwari": "Mukesh Kumar"}
+def _remap_tsi(name):
+    n = re.sub(r"-RD\s*$", "", (name or "").strip(), flags=re.I).strip()
+    return REMAP.get(n.lower(), n)
+
 def load_targets():
     if not TARGETS_CSV_URL:
         return {}
@@ -145,6 +155,7 @@ def load_targets():
     k_cat  = _find_key(r0, "Store Category", "StoreCategory", "Category")
     k_ret  = _find_key(r0, "Parent Retailer Name", "ParentRetailerName",
                        "Retailer Name", "Retailer")
+    k_tsi  = _find_key(r0, "TSI Name", "TSIName")
     out = {}
     for r in rows:
         code = (r.get(k_code) or "").strip() if k_code else ""
@@ -152,21 +163,29 @@ def load_targets():
             out[code] = {
                 "category": (r.get(k_cat) or "").strip() if k_cat else "",
                 "retailer": (r.get(k_ret) or "").strip() if k_ret else "",
+                "tsi": _remap_tsi(r.get(k_tsi)) if k_tsi else "",
             }
     return out
 
 def load_weekoff():
-    """Return dict of isp_code -> weekday name (e.g. {'MTRL1753': 'Thursday'})."""
+    """Returns (mode, data). Auto-detects the WeekOff tab format:
+      - NEW date-stamped attendance log -> ('log', {(code,date): rec})
+      - OLD recurring weekday           -> ('weekday', {code: dayname})"""
     if not WEEKOFF_CSV_URL:
-        return {}
+        return ("weekday", {})
     try:
         rows = _fetch_csv(WEEKOFF_CSV_URL)
     except Exception as e:
         print("[Remarks] WeekOff fetch failed (non-fatal): " + str(e))
-        return {}
+        return ("weekday", {})
     if not rows:
-        return {}
+        return ("weekday", {})
     r0 = rows[0]
+    if _find_key(r0, "Date") and _find_key(r0, "Status"):
+        import attendance_reports as AR
+        log = AR.parse_log(rows)
+        print("[Remarks] Attendance log loaded: " + str(len(log)) + " records")
+        return ("log", log)
     k_code = _find_key(r0, "ISP Code", "ISPCode", "ISP_Code", "Code")
     k_day  = _find_key(r0, "Week Off Day", "WeekOffDay", "WeekOff", "Off Day", "Day")
     out = {}
@@ -176,11 +195,21 @@ def load_weekoff():
         if code and day:
             out[code] = day
     print("[Remarks] WeekOff loaded: " + str(len(out)) + " ISDs")
-    return out
+    return ("weekday", out)
 
 def load_sales(target_date, targets, weekoff):
     if not SALES_CSV_URL:
         raise EnvironmentError("SALES_CSV_URL is not set")
+    # Build the set of ISP Codes off (Weekly Off / Leave) on target_date, from
+    # whichever WeekOff-tab format is live.
+    _DAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+    _target_day = _DAY_NAMES[target_date.weekday()]
+    _wo_mode, _wo_data = weekoff
+    if _wo_mode == "log":
+        import attendance_reports as AR
+        _excl = AR.excluded_codes(_wo_data, target_date)
+    else:
+        _excl = {c for c, dn in _wo_data.items() if dn.lower() == _target_day.lower()}
     rows = _fetch_csv(SALES_CSV_URL)
     if not rows:
         print("[Remarks] Sales CSV returned no rows.")
@@ -209,16 +238,16 @@ def load_sales(target_date, targets, weekoff):
         status = g(r, k_status)
         if not code:
             continue
-        # Skip ISDs on their week-off day
-        _DAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-        _target_day = _DAY_NAMES[target_date.weekday()]
-        _off = weekoff.get(code, "")
-        if _off and _off.lower() == _target_day.lower():
+        # Skip ISDs on Weekly Off / Leave for this date
+        if code in _excl:
             continue
         tgt      = targets.get(code, {})
         retailer = g(r, k_ret) or tgt.get("retailer", "")
+        # TSI from the Targets roster (remapped) when available; else the
+        # remapped Sales TSI.
+        tsi_name = tgt.get("tsi") or _remap_tsi(g(r, k_tsi))
         isd = dict(
-            code=code, name=g(r, k_name), tsi=g(r, k_tsi),
+            code=code, name=g(r, k_name), tsi=tsi_name,
             store_code=g(r, k_sc), retailer=retailer,
             city=g(r, k_city), state=g(r, k_state),
             category=tgt.get("category", ""),

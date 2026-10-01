@@ -52,14 +52,14 @@ SALES_CSV_URL = os.environ.get("SALES_CSV_URL") or \
 TARGETS_CSV_URL = os.environ.get("TARGETS_CSV_URL") or \
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?output=csv"
 WEEKOFF_CSV_URL = os.environ.get("WEEKOFF_CSV_URL") or \
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vScO4tHpOg-uISI7WnhedipMDO8eVNgsX0UC5AWNNe1eDbAhq2U7ZiaWpL51tvDvAOsVjD3cuwlt2Oz/pub?gid=1522547784&single=true&output=csv"
+    "https://docs.google.com/spreadsheets/d/1BsShTlrnwYGBUKMcURMI1Qla-pnttWFrPbMmiLNu6Eo/export?format=csv&gid=1706495387"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # ── Incentive scheme constants (mirror incentive-tracker.html CONFIG) ───────────
 
-REMAP = {"Saroj Kumar Rana": "Amit Kumar"}
+REMAP = {"Saroj Kumar Rana": "Amit Kumar", "Uday Kumar Tiwari": "Mukesh Kumar"}
 HC    = {"Amit Kumar": 85, "Joydwip Seal": 75, "Mukesh Kumar": 85, "Nabarun Bhattacharya": 85}
 TSIS  = ["Amit Kumar", "Joydwip Seal", "Mukesh Kumar", "Nabarun Bhattacharya"]
 RD_EXCLUSIVE = set(TSIS)
@@ -208,14 +208,20 @@ def load_codes():
     return codes
 
 def load_weekoff():
+    """Returns (mode, data). Auto-detects the WeekOff tab format:
+      - NEW date-stamped attendance log -> ('log', {(code,date): rec})
+      - OLD recurring weekday           -> ('weekday', {code: dayname})"""
     try:
         rows = fetch_csv(WEEKOFF_CSV_URL)
     except Exception as e:
         print("[TG] WeekOff fetch failed (non-fatal):", e)
-        return {}
+        return ("weekday", {})
     if not rows:
-        return {}
+        return ("weekday", {})
     r0 = rows[0]
+    if find_key(r0, "Date") and find_key(r0, "Status"):
+        import attendance_reports as AR
+        return ("log", AR.parse_log(rows))
     kC = find_key(r0, "ISP Code", "ISPCode", "Code")
     kD = find_key(r0, "Week Off Day", "WeekOff", "Off Day", "Day")
     out = {}
@@ -224,7 +230,14 @@ def load_weekoff():
         d = (r.get(kD) or "").strip() if kD else ""
         if c and d:
             out[c] = d
-    return out
+    return ("weekday", out)
+
+def excluded_set(mode, data, target_date, target_day_name):
+    """ISP Codes off (Weekly Off / Leave) on target_date, either format."""
+    if mode == "log":
+        import attendance_reports as AR
+        return AR.excluded_codes(data, target_date)
+    return {c for c, day in data.items() if day.lower() == target_day_name.lower()}
 
 def load_sales():
     rows = fetch_csv(SALES_CSV_URL)
@@ -255,11 +268,12 @@ def load_sales():
 
 def compute(target_date):
     codes   = load_codes()
-    weekoff = load_weekoff()
+    wo_mode, wo_data = load_weekoff()
     sales   = load_sales()
 
     month_start = date(target_date.year, target_date.month, 1)
     target_day_name = _DAY_NAMES[target_date.weekday()]
+    excl = excluded_set(wo_mode, wo_data, target_date, target_day_name)
 
     tc = {t: [c for c in codes if codes[c]["tsi"] == t] for t in TSIS}      # TSI -> [codes]
 
@@ -284,14 +298,12 @@ def compute(target_date):
         if tsi not in tc:
             continue
 
-        # ── Daily zero / no-upload (D-1 only, exclude week-off) ──
-        if d == target_date:
-            off = weekoff.get(c, "")
-            if not (off and off.lower() == target_day_name.lower()):
-                if r["status"] == "Zero Sale Uploaded":
-                    zero_codes[tsi].add(c)
-                elif r["status"] == "Sale Not Uploaded":
-                    noup_codes[tsi].add(c)
+        # ── Daily zero / no-upload (D-1 only, exclude Weekly Off + Leave) ──
+        if d == target_date and c not in excl:
+            if r["status"] == "Zero Sale Uploaded":
+                zero_codes[tsi].add(c)
+            elif r["status"] == "Sale Not Uploaded":
+                noup_codes[tsi].add(c)
 
         # ── Value/units only from actual uploaded sales, within MTD window ──
         if r["status"] != "Sale Uploaded":
