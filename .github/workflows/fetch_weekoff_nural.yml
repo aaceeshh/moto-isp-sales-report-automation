@@ -1,0 +1,37 @@
+name: Nural Week-Off / Leave Fetch
+
+# Pulls Week-Off / Leave / attendance from Nural, writes the date-stamped log
+# into the Week-Off tab, and sends the daily + MTD attendance reports.
+# Runs at 4:00 PM IST (first update after 3 PM) and 11:59 PM IST (finalize).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 10 * * *'   # 4:00 PM IST
+    - cron: '29 18 * * *'   # 11:59 PM IST
+
+jobs:
+  weekoff-fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright openpyxl \
+            google-api-python-client google-auth google-auth-oauthlib
+          python -m playwright install --with-deps chromium
+      - name: Fetch Week-Off / Leave and report
+        env:
+          PORTAL_USER:            ${{ secrets.PORTAL_USER }}
+          PORTAL_PASS:            ${{ secrets.PORTAL_PASS }}
+          TARGETS_SPREADSHEET_ID: ${{ secrets.TARGETS_SPREADSHEET_ID }}
+          TARGETS_CSV_URL:        ${{ secrets.TARGETS_CSV_URL }}
+          GOOGLE_CLIENT_ID:       ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET:   ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN:   ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python fetch_weekoff_nural.py
