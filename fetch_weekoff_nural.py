@@ -186,23 +186,67 @@ def _set_date(page, idx, dt):
     cal.get_by_text(str(dt.day), exact=True).first.click()
     page.wait_for_timeout(500)
 
-def _export_report(page, report_url, from_dt, to_dt, out_path):
+def _download_from_queue(page, since, out_path, keyword):
+    """Async fallback: the export was queued -> poll /report-queue for a fresh
+    successful row and download it (mirrors scrape_visit_report.py)."""
+    cutoff = since - timedelta(minutes=3)
+    deadline = datetime.now(IST) + timedelta(minutes=12)
+    page.goto(NURAL_ROOT + "/report-queue", wait_until="networkidle", timeout=60000)
+    while datetime.now(IST) < deadline:
+        rows = page.locator("tr, .MuiDataGrid-row, [role='row']")
+        for idx in range(min(rows.count(), 40)):
+            row = rows.nth(idx)
+            try:
+                txt = row.inner_text(timeout=2000)
+            except Exception:
+                continue
+            if keyword and keyword.lower() not in txt.lower():
+                continue
+            if not re.search(r"process\s+success|successfully|completed|complete", txt, re.I):
+                continue
+            with page.expect_download(timeout=120000) as dl:
+                row.locator('button[title="Download Report"]').click()
+            dl.value.save_as(out_path)
+            print("[WO] downloaded(queue)", out_path)
+            return
+        page.wait_for_timeout(15000)
+        page.reload(wait_until="networkidle", timeout=60000)
+    raise RuntimeError("Nural queue produced no fresh '%s' report in time." % keyword)
+
+def _export_report(page, report_url, from_dt, to_dt, out_path, queue_keyword):
     page.goto(report_url, wait_until="networkidle", timeout=60000)
     if "/login" in page.url.lower():
         raise RuntimeError("Redirected to /login opening %s" % report_url)
     page.wait_for_selector(CAL_ICON, state="visible", timeout=45000)
     _set_date(page, 0, from_dt)
     _set_date(page, 1, to_dt)
-    page.get_by_role("button", name=re.compile(r"^\s*SEARCH\s*$")).first.click()
-    # Wait for the result table, then click the Excel export icon (via JS click:
-    # the icon sits in an already-expanded side panel).
-    page.wait_for_selector("text=/TOTAL RECORDS|USER CODE|LEAVE TYPE/i", timeout=90000)
-    icon = page.locator('img[src*="exceldownload"]').first
-    icon.wait_for(state="attached", timeout=30000)
-    with page.expect_download(timeout=180000) as dl:
-        icon.evaluate("el => el.click()")
-    dl.value.save_as(out_path)
-    print("[WO] downloaded", out_path)
+
+    direct, downloads = [], []
+    page.on("response", lambda r: r.url.lower().endswith(".xlsx") and direct.append(r))
+    page.on("download", lambda d: downloads.append(d))
+    started = datetime.now(IST)
+    # SEARCH button carries an icon, so match by visible text, not accessible name.
+    btn = page.locator("button").filter(has_text=re.compile(r"^\s*SEARCH\s*$")).first
+    btn.scroll_into_view_if_needed()
+    btn.click()
+    deadline = datetime.now(IST) + timedelta(seconds=90)
+    while datetime.now(IST) < deadline:
+        if downloads:
+            downloads[0].save_as(out_path); print("[WO] downloaded", out_path); return
+        if direct:
+            body = direct[0].body()
+            if len(body) >= 1024:
+                Path(out_path).write_bytes(body); print("[WO] downloaded(direct)", out_path); return
+        if page.get_by_text(re.compile(r"TOTAL RECORDS|USER CODE|LEAVE TYPE", re.I)).count():
+            icon = page.locator('img[src*="exceldownload"]').first
+            icon.wait_for(state="attached", timeout=30000)
+            with page.expect_download(timeout=180000) as dl:
+                icon.evaluate("el => el.click()")
+            dl.value.save_as(out_path); print("[WO] downloaded", out_path); return
+        if page.get_by_text(re.compile(r"status of your request|report queue|added to queue|submitted successfully", re.I)).count():
+            break
+        page.wait_for_timeout(1000)
+    _download_from_queue(page, started, out_path, queue_keyword)
 
 def nural_download(from_dt, to_dt, out_dir):
     from playwright.sync_api import sync_playwright
@@ -220,8 +264,8 @@ def nural_download(from_dt, to_dt, out_dir):
         page = ctx.new_page()
         try:
             _login(page, user, pw)
-            _export_report(page, ATT_URL,   from_dt, to_dt, str(att))
-            _export_report(page, LEAVE_URL, from_dt, to_dt, str(lv))
+            _export_report(page, ATT_URL,   from_dt, to_dt, str(att), "attendance")
+            _export_report(page, LEAVE_URL, from_dt, to_dt, str(lv),  "leave")
         except Exception:
             try:
                 (out_dir / "debug.html").write_text(page.content(), encoding="utf-8")
