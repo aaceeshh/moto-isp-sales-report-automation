@@ -450,13 +450,17 @@ def send_telegram(text):
         urllib.request.urlopen(urllib.request.Request(url, data=body), timeout=30)
 
 def _split(text, limit):
+    """Split into <=limit chunks by lines (long lists have no blank lines, so a
+    paragraph splitter would overflow Telegram's 4096 cap)."""
     chunks, cur = [], ""
-    for para in text.split("\n\n"):
-        add = (("\n\n" if cur else "") + para)
-        if len(cur) + len(add) > limit:
-            chunks.append(cur); cur = para
+    for line in text.split("\n"):
+        add = (("\n" if cur else "") + line)
+        if cur and len(cur) + len(add) > limit:
+            chunks.append(cur); cur = line
         else:
             cur += add
+        while len(cur) > limit:            # safety for a single over-long line
+            chunks.append(cur[:limit]); cur = cur[limit:]
     if cur:
         chunks.append(cur)
     return chunks
