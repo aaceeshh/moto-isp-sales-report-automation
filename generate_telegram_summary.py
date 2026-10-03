@@ -12,10 +12,10 @@ Reads the same public feeds the dashboards use (Sales + Targets + Week-Off)
 and sends three Telegram messages:
   1. Daily TSI sell-out summary  (Target / FTD / MTD / %ach / #Zero / #NoUpload)
   2. NPI Tracker                 (FTD / MTD units + % of ISDs participated, MTD)
-  3. TSI Incentive summary       (all 7 Aug'26 scheme parameters, Ach/Target : %)
+  3. TSI Incentive summary       (all 7 scheme parameters, Ach/Target : %)
 
 Metric decisions (confirmed with owner):
-  - %age achievement = MTD sell-out value / full-month Aug target
+  - %age achievement = MTD sell-out value / full-month target
   - NPI '% ISDs participated' denominator = ALL of the TSI's ISDs (MTD)
   - Zero-sale / No-upload counts exclude ISDs on their designated week-off day
   - TSIs are attributed by ISP Code -> Targets sheet (not the sales TSI label),
@@ -32,6 +32,7 @@ Optional:
 import os
 import io
 import re
+import calendar
 import csv
 import math
 import json
@@ -60,13 +61,35 @@ TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 # ── Incentive scheme constants (mirror incentive-tracker.html CONFIG) ───────────
 
 REMAP = {"Saroj Kumar Rana": "Amit Kumar", "Uday Kumar Tiwari": "Mukesh Kumar"}
-HC    = {"Amit Kumar": 85, "Joydwip Seal": 75, "Mukesh Kumar": 85, "Nabarun Bhattacharya": 85}
+HC    = {"Amit Kumar": 80, "Joydwip Seal": 74, "Mukesh Kumar": 85, "Nabarun Bhattacharya": 95}
 TSIS  = ["Amit Kumar", "Joydwip Seal", "Mukesh Kumar", "Nabarun Bhattacharya"]
 RD_EXCLUSIVE = set(TSIS)
 
-SCHEME_YEAR, SCHEME_MONTH = 2026, 8            # August (1-indexed here)
-CUT_B1 = date(2026, 8, 9)
-CUT_B2 = date(2026, 8, 16)
+# ── Scheme month: derived from the reported date, not from "today" ────────────
+# This job runs at 12:01 AM IST and reports D-1, so on 1 Nov it reports 31 Oct and
+# must still use October's rules. _set_scheme() is called at the top of compute().
+SCHEME_YEAR, SCHEME_MONTH = 2026, 10
+MONTH_END  = 31
+CUT_B1     = date(2026, 10, 20)      # booster-1 cutoff: 20th
+CUT_B2     = date(2026, 10, 31)      # booster-2 cutoff: month end
+TGT_COL    = "Oct'26 TGT"
+MON_LABEL  = "Oct"
+
+# Oct'26 scheme thresholds (mirror public/index.html CONFIG in the TSI Incentive
+# Tracker folder). These are scheme terms, not dates - review them each month.
+THINGS_PER_ISD, THINGS_MIN = 5, 0.60       # 5 x ISDs, >=60% achievement
+B1_UNITS, B1_SHARE, B1_AMT = 10, 0.65, 3000
+B2_UNITS, B2_SHARE, B2_AMT = 25, 0.50, 5000
+
+def _set_scheme(target_date):
+    """Point every month-specific constant at target_date's month."""
+    global SCHEME_YEAR, SCHEME_MONTH, MONTH_END, CUT_B1, CUT_B2, TGT_COL, MON_LABEL
+    SCHEME_YEAR, SCHEME_MONTH = target_date.year, target_date.month
+    MONTH_END = calendar.monthrange(SCHEME_YEAR, SCHEME_MONTH)[1]
+    CUT_B1    = date(SCHEME_YEAR, SCHEME_MONTH, 20)
+    CUT_B2    = date(SCHEME_YEAR, SCHEME_MONTH, MONTH_END)
+    MON_LABEL = calendar.month_abbr[SCHEME_MONTH]
+    TGT_COL   = "%s'%s TGT" % (MON_LABEL, str(SCHEME_YEAR)[-2:])
 
 RE_PREMIUM = re.compile(r"edge|razr|signature", re.I)
 RE_FIXEDGE = re.compile(r"edge\s*70\s*pro|edge\s*70\s*max|signature", re.I)
@@ -186,7 +209,7 @@ def load_codes():
     kT   = find_key(r0, "TSI Name", "TSIName")
     kCat = find_key(r0, "Store Category", "Category")
     kFix = find_key(r0, "Fixture Store(Y/N)", "Fixture Store", "Fixture")
-    kTgt = find_key(r0, "Aug'26 TGT", "Aug'26 Target", "Aug26 TGT")
+    kTgt = find_key(r0, TGT_COL, TGT_COL.replace("TGT", "Target"), TGT_COL.replace("'", ""))
     kStr = find_key(r0, "Parent Retailer Name", "Store Name", "Retailer Name")
     kCty = find_key(r0, "City")
     kSt  = find_key(r0, "State")
@@ -267,6 +290,7 @@ def load_sales():
 # ── Computation ────────────────────────────────────────────────────────────────
 
 def compute(target_date):
+    _set_scheme(target_date)
     codes   = load_codes()
     wo_mode, wo_data = load_weekoff()
     sales   = load_sales()
@@ -279,7 +303,7 @@ def compute(target_date):
 
     # Per-code aggregates over the scheme month up to and including D-1 (MTD).
     agg = {c: {"things": 0.0, "premVal": 0.0, "totVal": 0.0, "fixEdge": 0.0,
-               "b9": 0.0, "b16": 0.0, "active": False, "sellMTD": 0.0, "sellFTD": 0.0,
+               "bA": 0.0, "bB": 0.0, "active": False, "sellMTD": 0.0, "sellFTD": 0.0,
                "npiFTD": {m[0]: 0.0 for m in NPI_MODELS},
                "npiMTD": {m[0]: 0.0 for m in NPI_MODELS}} for c in codes}
 
@@ -333,9 +357,9 @@ def compute(target_date):
             a["fixEdge"] += q
         if RE_BOOSTER.search(m):
             if d <= CUT_B1:
-                a["b9"] += q
+                a["bA"] += q
             if d <= CUT_B2:
-                a["b16"] += q
+                a["bB"] += q
         for label, match in NPI_MODELS:
             if match(ml):
                 a["npiMTD"][label] += q
@@ -401,7 +425,8 @@ def _need(share, base):
 def build_incentive(target_date, codes, tc, agg):
     mark = lambda ok: "✅" if ok else "\U0001F538"   # ✅ achieved / 🔸 in progress
     L = ["\U0001F3C6 <b>INCENTIVE TRACKER</b> — %s" % target_date.strftime("%d %b %Y"),
-         "<i>Aug'26 scheme · ✅ achieved · 🔸 in progress</i>",
+         "<i>%s'%s scheme · ✅ achieved · 🔸 in progress</i>"
+         % (MON_LABEL, str(SCHEME_YEAR)[-2:]),
          "━" * 20, ""]
     for t in TSIS:
         cs   = tc[t]
@@ -410,15 +435,15 @@ def build_incentive(target_date, codes, tc, agg):
         fx   = [c for c in cs if codes[c]["fix"] == "Yes"]
         hc   = HC.get(t, 0)
 
-        # 1 Moto Things (5 units × ISDs)
+        # 1 Moto Things (5 units × ISDs, >=60% to qualify)
         things = sum(agg[c]["things"] for c in cs)
-        t_tgt  = 5 * n
+        t_tgt  = THINGS_PER_ISD * n
+        t_need = _need(THINGS_MIN, t_tgt)
 
         # 2 RD Premium ≥80% (≥70% of RD ISDs)
         rd_ok = sum(1 for c in rd if agg[c]["totVal"] > 0 and
                     agg[c]["premVal"] / agg[c]["totVal"] >= 0.8)
-        rd_need = _need(0.7, len(rd))
-        rd_prog = min(100, round(100 * (rd_ok / len(rd)) / 0.7)) if rd else 0
+        rd_hit = bool(rd) and rd_ok / len(rd) >= 0.7
 
         # 3 HC active by 20th (≥90% of sanctioned HC)
         act = sum(1 for c in cs if agg[c]["active"])
@@ -426,38 +451,38 @@ def build_incentive(target_date, codes, tc, agg):
 
         # 4 Fixture Edge ≥4 units (≥90% of fixture ISDs)
         fx_ok = sum(1 for c in fx if agg[c]["fixEdge"] >= 4)
-        fx_need = _need(0.9, len(fx))
-        fx_prog = min(100, round(100 * (fx_ok / len(fx)) / 0.9)) if fx else 0
+        fx_hit = bool(fx) and fx_ok / len(fx) >= 0.9
 
         # 5 Sell-out achievement (tiered 90% / 100%)
         tgt_sum = sum(codes[c]["tgt"] for c in cs)
         sell    = sum(agg[c]["sellMTD"] for c in cs)
-        so_pct  = round(100 * sell / tgt_sum) if tgt_sum else 0
+        so_pct  = (100.0 * sell / tgt_sum) if tgt_sum else 0.0
 
         # 6/7 Boosters
-        b1_ok = sum(1 for c in cs if agg[c]["b9"] >= 5)
-        b1_need = _need(0.75, n)
-        b1_prog = min(100, round(100 * (b1_ok / n) / 0.75)) if n else 0
-        b2_ok = sum(1 for c in cs if agg[c]["b16"] >= 15)
-        b2_need = _need(0.50, n)
-        b2_prog = min(100, round(100 * (b2_ok / n) / 0.50)) if n else 0
+        b1_ok  = sum(1 for c in cs if agg[c]["bA"] >= B1_UNITS)
+        b1_hit = bool(n) and b1_ok / n >= B1_SHARE
+        b2_ok  = sum(1 for c in cs if agg[c]["bB"] >= B2_UNITS)
+        b2_hit = bool(n) and b2_ok / n >= B2_SHARE
 
         L.append("\U0001F464 <b>%s</b>" % t)
         L.append("<i>%d ISDs · %d RD · %d fixture · HC %d</i>" % (n, len(rd), len(fx), hc))
-        L.append("%s Moto Things — %d / %d units (%d%%)"
-                 % (mark(things >= t_tgt), round(things), t_tgt, pctf(things, t_tgt)))
-        L.append("%s RD Premium ≥80%% — %d / %d ISDs (%d%%, need 70%%)"
-                 % (mark(rd_prog >= 100), rd_ok, rd_need, rd_prog))
-        L.append("%s HC active by 20th — %d / %d (%d%%)"
-                 % (mark(act >= hc_need), act, hc_need, pctf(act, hc_need)))
-        L.append("%s Fixture Edge ≥4u — %d / %d ISDs (%d%%, need 90%%)"
-                 % (mark(fx_prog >= 100), fx_ok, fx_need, fx_prog))
-        L.append("%s Sell-out value — %d%% of target (₹3k@90%%, ₹4k@100%%)"
-                 % (mark(so_pct >= 90), so_pct))
-        L.append("%s Booster-1 ≥5u by 09 Aug — %d / %d ISDs (%d%%, need 75%%)"
-                 % (mark(b1_prog >= 100), b1_ok, b1_need, b1_prog))
-        L.append("%s Booster-2 ≥15u by 16 Aug — %d / %d ISDs (%d%%, need 50%%)"
-                 % (mark(b2_prog >= 100), b2_ok, b2_need, b2_prog))
+        L.append("%s Moto Things — %d / %d units needed (%d%% of %d) · %d%% of full target"
+                 % (mark(things >= t_need), round(things), t_need,
+                    round(THINGS_MIN * 100), t_tgt, pctf(things, t_tgt)))
+        L.append("%s RD Premium ≥80%% — %d / %d RD ISDs (%d%%) · need 70%%"
+                 % (mark(rd_hit), rd_ok, len(rd), pctf(rd_ok, len(rd))))
+        L.append("%s HC active by 20th — %d active / %d needed (90%% of HC %d)"
+                 % (mark(act >= hc_need), act, hc_need, hc))
+        L.append("%s Fixture Edge ≥4u — %d / %d fixture ISDs (%d%%) · need 90%%"
+                 % (mark(fx_hit), fx_ok, len(fx), pctf(fx_ok, len(fx))))
+        L.append("%s Sell-out — %s / %s = %.1f%% (₹3k@90%%, ₹4k@100%%)"
+                 % (mark(so_pct >= 90), inr(sell), inr(tgt_sum), so_pct))
+        L.append("%s Booster-1 ≥%du by 20 %s — %d / %d ISDs (%d%%) · need %d%%"
+                 % (mark(b1_hit), B1_UNITS, MON_LABEL, b1_ok, n,
+                    pctf(b1_ok, n), round(B1_SHARE * 100)))
+        L.append("%s Booster-2 ≥%du by %d %s — %d / %d ISDs (%d%%) · need %d%%"
+                 % (mark(b2_hit), B2_UNITS, MONTH_END, MON_LABEL, b2_ok, n,
+                    pctf(b2_ok, n), round(B2_SHARE * 100)))
         L.append("")
     L.append("<i>Internal reference only — payout subject to activation &amp; "
              "clearance of all eligibility criteria.</i>")
