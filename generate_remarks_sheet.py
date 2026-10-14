@@ -156,6 +156,7 @@ def load_targets():
     k_ret  = _find_key(r0, "Parent Retailer Name", "ParentRetailerName",
                        "Retailer Name", "Retailer")
     k_tsi  = _find_key(r0, "TSI Name", "TSIName")
+    k_st   = _find_key(r0, "ISP Status", "Status")
     out = {}
     for r in rows:
         code = (r.get(k_code) or "").strip() if k_code else ""
@@ -164,6 +165,7 @@ def load_targets():
                 "category": (r.get(k_cat) or "").strip() if k_cat else "",
                 "retailer": (r.get(k_ret) or "").strip() if k_ret else "",
                 "tsi": _remap_tsi(r.get(k_tsi)) if k_tsi else "",
+                "status": (r.get(k_st) or "").strip() if k_st else "",
             }
     return out
 
@@ -242,6 +244,9 @@ def load_sales(target_date, targets, weekoff):
         if code in _excl:
             continue
         tgt      = targets.get(code, {})
+        # Skip ISDs marked Inactive in Targets (exact match — "inactive" contains "active")
+        if (tgt.get("status") or "").strip().lower() == "inactive":
+            continue
         retailer = g(r, k_ret) or tgt.get("retailer", "")
         # TSI from the Targets roster (remapped) when available; else the
         # remapped Sales TSI.

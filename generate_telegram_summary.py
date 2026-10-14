@@ -213,6 +213,7 @@ def load_codes():
     kStr = find_key(r0, "Parent Retailer Name", "Store Name", "Retailer Name")
     kCty = find_key(r0, "City")
     kSt  = find_key(r0, "State")
+    kStat = find_key(r0, "ISP Status", "Status")
     codes = {}
     for r in rows:
         c = (r.get(kC) or "").strip()
@@ -227,6 +228,7 @@ def load_codes():
             "store": (r.get(kStr) or "").strip() if kStr else "",
             "city":  (r.get(kCty) or "").strip() if kCty else "",
             "state": (r.get(kSt)  or "").strip() if kSt  else "",
+            "status": (r.get(kStat) or "").strip() if kStat else "",
         }
     return codes
 
@@ -322,8 +324,9 @@ def compute(target_date):
         if tsi not in tc:
             continue
 
-        # ── Daily zero / no-upload (D-1 only, exclude Weekly Off + Leave) ──
-        if d == target_date and c not in excl:
+        # ── Daily zero / no-upload (D-1 only, exclude Weekly Off + Leave + Inactive) ──
+        if d == target_date and c not in excl \
+                and codes[c].get("status", "").strip().lower() != "inactive":
             if r["status"] == "Zero Sale Uploaded":
                 zero_codes[tsi].add(c)
             elif r["status"] == "Sale Not Uploaded":
