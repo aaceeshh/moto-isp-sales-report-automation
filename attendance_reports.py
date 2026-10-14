@@ -69,6 +69,13 @@ def is_late(in_time):
 def fmt_day(d):
     return "%02d %s" % (d.day, _MONTHS[d.month - 1])
 
+def _is_inactive(info):
+    """True only when the ISD's Targets status is exactly 'Inactive'.
+    NB: must be an exact match — the word 'inactive' contains 'active'."""
+    if not info:
+        return False
+    return str(info.get("status", "")).strip().lower() == "inactive"
+
 # ── log parsing ──────────────────────────────────────────────────────────────
 
 def parse_log(rows):
@@ -128,7 +135,7 @@ def _by_tsi(codes, tsi_order, items):
     g = {t: [] for t in tsi_order}
     for code, extra in items:
         info = codes.get(code)
-        if not info:
+        if not info or _is_inactive(info):
             continue
         t = info.get("tsi")
         if t in g:
@@ -200,13 +207,13 @@ def build_mtd_report(year, month, codes, tsi_order, log):
     month_days = [d.day for (c, d) in log if d.year == year and d.month == month]
     upto = max(month_days) if month_days else 0
     def _active(c):
-        s = (codes[c].get("status") or "")
-        return (not s) or ("active" in s.lower())
+        return not _is_inactive(codes.get(c))
     L = ["\U0001F4CA <b>Attendance MTD — %s</b>" % hdr,
          "<i>Week-Off · Leave · Late (&gt;12:45) · Not-marked, by ISD</i>", "━" * 20, ""]
     days = lambda ds: ", ".join("%02d" % d.day for d in sorted(ds))
     for t in tsi_order:
-        tcodes = [c for c in agg if (codes.get(c) or {}).get("tsi") == t]
+        tcodes = [c for c in agg if (codes.get(c) or {}).get("tsi") == t
+                  and not _is_inactive(codes.get(c))]
         tcodes.sort(key=lambda c: (codes[c].get("isd") or "").lower())
         two = sum(len(agg[c]["wo"]) for c in tcodes)
         tlv = sum(len(agg[c]["leave"]) for c in tcodes)
@@ -238,7 +245,7 @@ def daily_sheet_rows(target_date, codes, tsi_order, log):
             "Status", "Leave Type", "In Time", "Late"]
     rows = []
     for (c, d), r in log.items():
-        if d != target_date or c not in codes:
+        if d != target_date or c not in codes or _is_inactive(codes.get(c)):
             continue
         st = r["status"].lower()
         if st not in EXCLUDE_STATUSES and not r["late"]:
@@ -257,7 +264,7 @@ def mtd_sheet_rows(year, month, codes, tsi_order, log):
     ds = lambda dates: ", ".join(fmt_day(d) for d in sorted(dates))
     rows = []
     for c, a in agg.items():
-        if c not in codes:
+        if c not in codes or _is_inactive(codes.get(c)):
             continue
         if not (a["wo"] or a["leave"] or a["late"]):
             continue  # exceptions only — skip ISDs with nothing to report
@@ -277,7 +284,7 @@ def _isd_order(codes, tsi_order):
         t = (codes[c] or {}).get("tsi")
         return (tsi_order.index(t) if t in tsi_order else 99,
                 (codes[c].get("isd") or "").lower())
-    return sorted(codes.keys(), key=key)
+    return sorted((c for c in codes if not _is_inactive(codes.get(c))), key=key)
 
 def _status_word(rec):
     """Base attendance word (no late merge): Present / Weekly Off / Leave /
@@ -331,8 +338,7 @@ def build_notmarked_messages(target_date, codes, tsi_order, log):
     attendance NOR leave on target_date (i.e. no record at all in the log)."""
     hdr = fmt_day(target_date)
     def active(c):
-        s = (codes[c].get("status") or "")
-        return (not s) or ("active" in s.lower())
+        return not _is_inactive(codes.get(c))
     msgs = []
     for t in tsi_order:
         miss = [c for c in codes
