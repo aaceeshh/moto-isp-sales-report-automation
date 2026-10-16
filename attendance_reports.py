@@ -152,7 +152,9 @@ def build_daily_report(target_date, codes, tsi_order, log):
             if d == target_date and r["status"].lower() == "leave"]
     late = [(c, r["in_time"]) for (c, d), r in log.items()
             if d == target_date and r["late"]]
-    gwo, glv, glt = (_by_tsi(codes, tsi_order, x) for x in (wo, lv, late))
+    pend = [(c, r["in_time"]) for (c, d), r in log.items()
+            if d == target_date and "pending" in r["status"].lower()]
+    gwo, glv, glt, gpd = (_by_tsi(codes, tsi_order, x) for x in (wo, lv, late, pend))
 
     def line(c, suffix=""):
         info = codes[c]
@@ -163,12 +165,12 @@ def build_daily_report(target_date, codes, tsi_order, log):
             s += " · %s" % suffix
         return s
 
-    L = ["\U0001F4CB <b>Attendance — Week-Off / Leave / Late</b>",
+    L = ["\U0001F4CB <b>Attendance — Week-Off / Leave / Late / Pending</b>",
          "%s" % fmt_day(target_date), "━" * 20, ""]
     for t in tsi_order:
-        wol, lvl, ltl = gwo[t], glv[t], glt[t]
-        L.append("\U0001F464 <b>%s</b> — WO %d · Leave %d · Late %d"
-                 % (esc(t), len(wol), len(lvl), len(ltl)))
+        wol, lvl, ltl, pdl = gwo[t], glv[t], glt[t], gpd[t]
+        L.append("\U0001F464 <b>%s</b> — WO %d · Leave %d · Late %d · Pending %d"
+                 % (esc(t), len(wol), len(lvl), len(ltl), len(pdl)))
         if wol:
             L.append("  🛌 <b>Weekly Off</b>")
             L += [line(c) for c, _ in wol]
@@ -178,7 +180,10 @@ def build_daily_report(target_date, codes, tsi_order, log):
         if ltl:
             L.append("  ⏰ <b>Late &gt;12:45</b>")
             L += [line(c, esc(it)) for c, it in ltl]
-        if not (wol or lvl or ltl):
+        if pdl:
+            L.append("  ⏳ <b>Approval Pending</b>")
+            L += [line(c, esc(it)) for c, it in pdl]
+        if not (wol or lvl or ltl or pdl):
             L.append("  <i>— none —</i>")
         L.append("")
     return "\n".join(L).rstrip()
@@ -248,8 +253,8 @@ def daily_sheet_rows(target_date, codes, tsi_order, log):
         if d != target_date or c not in codes or _is_inactive(codes.get(c)):
             continue
         st = r["status"].lower()
-        if st not in EXCLUDE_STATUSES and not r["late"]:
-            continue  # only exceptions in the daily tab
+        if st not in EXCLUDE_STATUSES and not r["late"] and "pending" not in st:
+            continue  # only exceptions in the daily tab (WO / Leave / Late / Pending)
         i = codes[c]
         rows.append([i.get("tsi", ""), i.get("isd", ""), c, i.get("store", ""),
                      i.get("city", ""), r["status"], r["leave_type"],
