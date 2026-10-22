@@ -310,17 +310,28 @@ def _cell(rec):
 LEGEND = ("Note: 'Late' = reported after 12:45 PM · 'Leave' includes approved + "
           "pending · blank = no attendance record")
 
+# Count columns inserted right after ISP Code (MTD matrix). Order matters for layout.
+MATRIX_COUNT_COLS = ["Present", "Absent", "Late", "Weekly Off", "Leave"]
+# Fixed number of leading (non-day) columns in the matrix: TSI, ISD, Code + counts.
+MATRIX_LEAD_COLS = 3 + len(MATRIX_COUNT_COLS)
+
 def attendance_matrix_rows(year, month, upto_day, codes, tsi_order, log):
-    """MTD register: ISDs down rows, dates 01..upto_day across the top,
-    status code in each cell. Overwritten daily."""
+    """MTD register: ISDs down rows; per-ISD counts (Present/Absent/Late/Weekly
+    Off/Leave) right after ISP Code, then dates 01..upto_day across the top with
+    the status word in each cell. Overwritten daily."""
     title = "Attendance — %s %d" % (_MONTHS[month - 1], year)
-    header = ["TSI", "ISD Name", "ISP Code"] + ["%02d" % d for d in range(1, upto_day + 1)]
+    header = (["TSI", "ISD Name", "ISP Code"] + MATRIX_COUNT_COLS
+              + ["%02d" % d for d in range(1, upto_day + 1)])
     out = [[title], [LEGEND], header]
     for c in _isd_order(codes, tsi_order):
         info = codes[c]
-        row = [info.get("tsi", ""), info.get("isd", ""), c]
-        for d in range(1, upto_day + 1):
-            row.append(_cell(log.get((c, date(year, month, d)))))
+        cells = [_cell(log.get((c, date(year, month, d)))) for d in range(1, upto_day + 1)]
+        cnt = {k: 0 for k in MATRIX_COUNT_COLS}
+        for cell in cells:
+            if cell in cnt:
+                cnt[cell] += 1
+        row = ([info.get("tsi", ""), info.get("isd", ""), c]
+               + [cnt[k] for k in MATRIX_COUNT_COLS] + cells)
         out.append(row)
     return out
 

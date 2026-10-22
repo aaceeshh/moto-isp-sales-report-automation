@@ -400,6 +400,68 @@ def ensure_tab(svc, sid, title):
         svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
             "requests": [{"addSheet": {"properties": {"title": title}}}]}).execute()
 
+def _sheet_id(svc, sid, title):
+    meta = svc.spreadsheets().get(spreadsheetId=sid).execute()
+    for sh in meta["sheets"]:
+        if sh["properties"]["title"] == title:
+            return sh["properties"]["sheetId"]
+    return None
+
+def _rgb(hexs):
+    h = hexs.lstrip("#")
+    return {"red": int(h[0:2], 16) / 255, "green": int(h[2:4], 16) / 255,
+            "blue": int(h[4:6], 16) / 255}
+
+# Day-cell status text -> background colour for the MTD matrix.
+_MTD_COLORS = [
+    ("Present",     "TEXT_EQ",       "#B7E1CD"),
+    ("Late",        "TEXT_EQ",       "#F6B26B"),
+    ("Weekly Off",  "TEXT_EQ",       "#FFE599"),
+    ("Leave",       "TEXT_EQ",       "#EA9999"),
+    ("Absent",      "TEXT_EQ",       "#E06666"),
+    ("Store Close", "TEXT_EQ",       "#D9D9D9"),
+    ("Pending",     "TEXT_CONTAINS", "#CFE2F3"),
+]
+
+def format_mtd_tab(svc, sid, title, lead_cols, day_cols, data_rows):
+    """Colour the MTD day grid by status text + freeze header rows / label cols.
+    Programmatic so the colours track the day columns after the count columns are
+    inserted. Clears any prior conditional-format rules first (idempotent)."""
+    sheet_id = _sheet_id(svc, sid, title)
+    if sheet_id is None:
+        return
+    meta = svc.spreadsheets().get(
+        spreadsheetId=sid,
+        fields="sheets(properties(sheetId),conditionalFormats)").execute()
+    existing = 0
+    for sh in meta["sheets"]:
+        if sh["properties"]["sheetId"] == sheet_id:
+            existing = len(sh.get("conditionalFormats", []) or [])
+            break
+    reqs = [{"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": i}}
+            for i in range(existing - 1, -1, -1)]
+    day_range = {"sheetId": sheet_id,
+                 "startRowIndex": 3, "endRowIndex": 3 + data_rows,
+                 "startColumnIndex": lead_cols, "endColumnIndex": lead_cols + day_cols}
+    for text, ctype, color in _MTD_COLORS:
+        reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [day_range],
+            "booleanRule": {
+                "condition": {"type": ctype, "values": [{"userEnteredValue": text}]},
+                "format": {"backgroundColor": _rgb(color)}}}}})
+    reqs.append({"updateSheetProperties": {
+        "properties": {"sheetId": sheet_id,
+                       "gridProperties": {"frozenRowCount": 3,
+                                          "frozenColumnCount": lead_cols}},
+        "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"}})
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": sheet_id, "startRowIndex": 2, "endRowIndex": 3},
+        "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+        "fields": "userEnteredFormat.textFormat.bold"}})
+    svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={"requests": reqs}).execute()
+    print("[WO] formatted MTD tab '%s' (%d day cols, %d data rows)"
+          % (title, day_cols, data_rows))
+
 def get_or_create_attendance_sheet(drv, svc):
     """Find the app-owned attendance spreadsheet by name (drive.file sees only
     app-created files), or create it in the shared folder and make it
@@ -504,8 +566,9 @@ def main():
     overwrite_tab(svc, sid, "Attendance FTD", AR.attendance_ftd_rows(hi, codes, TSIS, log))
     mtd_tab = "Attendance MTD %s" % hi.strftime("%b %Y")
     ensure_tab(svc, sid, mtd_tab)
-    overwrite_tab(svc, sid, mtd_tab,
-                  AR.attendance_matrix_rows(hi.year, hi.month, hi.day, codes, TSIS, log))
+    matrix = AR.attendance_matrix_rows(hi.year, hi.month, hi.day, codes, TSIS, log)
+    overwrite_tab(svc, sid, mtd_tab, matrix)
+    format_mtd_tab(svc, sid, mtd_tab, AR.MATRIX_LEAD_COLS, hi.day, len(matrix) - 3)
     print("[WO] attendance sheet: https://docs.google.com/spreadsheets/d/%s/edit" % sid)
 
     # Telegram:
