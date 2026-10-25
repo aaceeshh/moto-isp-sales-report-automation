@@ -2,64 +2,17 @@ name: ISP Sales Report Automation
 
 on:
   schedule:
-    # ===== TEMPORARY denser schedule — ONLY 10–21 Oct (auto-reverts 22 Oct) =====
-    - cron: "0 6 10-21 10 *"     # 11:30 AM IST
-    - cron: "30 6 10-21 10 *"    # 12:00 PM IST
-    - cron: "0 7 10-21 10 *"     # 12:30 PM IST
-    - cron: "30 7 10-21 10 *"    # 01:00 PM IST
-    - cron: "0 8 10-21 10 *"     # 01:30 PM IST
-    - cron: "30 8 10-21 10 *"    # 02:00 PM IST
-    - cron: "0 10 10-21 10 *"    # 03:30 PM IST
-    - cron: "30 10 10-21 10 *"   # 04:00 PM IST
-    - cron: "30 11 10-21 10 *"   # 05:00 PM IST
-    - cron: "30 12 10-21 10 *"   # 06:00 PM IST
-    - cron: "30 13 10-21 10 *"   # 07:00 PM IST
-    - cron: "0 14 10-21 10 *"    # 07:30 PM IST
-    - cron: "30 14 10-21 10 *"   # 08:00 PM IST
-    - cron: "0 15 10-21 10 *"    # 08:30 PM IST
-    - cron: "30 15 10-21 10 *"   # 09:00 PM IST
-    - cron: "0 16 10-21 10 *"    # 09:30 PM IST
-    - cron: "30 16 10-21 10 *"   # 10:00 PM IST
-    - cron: "0 17 10-21 10 *"    # 10:30 PM IST
-    - cron: "30 17 10-21 10 *"   # 11:00 PM IST
-    - cron: "0 18 10-21 10 *"    # 11:30 PM IST
-    - cron: "29 18 10-21 10 *"   # 11:59 PM IST
-    # ===== FALLBACK schedule — every day EXCEPT 10–21 Oct (Oct 1-9/22-31 + all non-Oct months) =====
-    - cron: "30 5 1-9,22-31 10 *"
-    - cron: "30 5 * 1-9,11,12 *"     # 11:00 AM IST
-    - cron: "30 8 1-9,22-31 10 *"
-    - cron: "30 8 * 1-9,11,12 *"     # 02:00 PM IST
-    - cron: "30 10 1-9,22-31 10 *"
-    - cron: "30 10 * 1-9,11,12 *"    # 04:00 PM IST
-    - cron: "30 12 1-9,22-31 10 *"
-    - cron: "30 12 * 1-9,11,12 *"    # 06:00 PM IST
-    - cron: "30 13 1-9,22-31 10 *"
-    - cron: "30 13 * 1-9,11,12 *"    # 07:00 PM IST
-    - cron: "0 14 1-9,22-31 10 *"
-    - cron: "0 14 * 1-9,11,12 *"     # 07:30 PM IST
-    - cron: "30 14 1-9,22-31 10 *"
-    - cron: "30 14 * 1-9,11,12 *"    # 08:00 PM IST
-    - cron: "0 15 1-9,22-31 10 *"
-    - cron: "0 15 * 1-9,11,12 *"     # 08:30 PM IST
-    - cron: "30 15 1-9,22-31 10 *"
-    - cron: "30 15 * 1-9,11,12 *"    # 09:00 PM IST
-    - cron: "0 16 1-9,22-31 10 *"
-    - cron: "0 16 * 1-9,11,12 *"     # 09:30 PM IST
-    - cron: "30 16 1-9,22-31 10 *"
-    - cron: "30 16 * 1-9,11,12 *"    # 10:00 PM IST
-    - cron: "0 17 1-9,22-31 10 *"
-    - cron: "0 17 * 1-9,11,12 *"     # 10:30 PM IST
-    - cron: "30 17 1-9,22-31 10 *"
-    - cron: "30 17 * 1-9,11,12 *"    # 11:00 PM IST
-    - cron: "0 18 1-9,22-31 10 *"
-    - cron: "0 18 * 1-9,11,12 *"     # 11:30 PM IST
-    - cron: "29 18 1-9,22-31 10 *"
-    - cron: "29 18 * 1-9,11,12 *"    # 11:59 PM IST
+    # Every 15 minutes, 10:00 AM – 11:59 PM IST, every day. (UTC = IST − 5:30)
+    - cron: "30,45 4 * * *"     # 10:00, 10:15 AM IST
+    - cron: "*/15 5-17 * * *"   # 10:30 AM – 11:15 PM IST (every 15 min)
+    - cron: "0,15 18 * * *"     # 11:30, 11:45 PM IST
+    - cron: "29 18 * * *"       # 11:59 PM IST
   workflow_dispatch: # Allows manual trigger from the Actions tab
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # hard cap so a hung Selenium run can't burn hours at 15-min cadence
 
     steps:
       - name: Checkout Repository
