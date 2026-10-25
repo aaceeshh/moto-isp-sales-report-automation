@@ -14,7 +14,7 @@ Pipeline:
      month) as Excel — reusing the proven flow from the Visit Tracker scraper
      (MUI calendar date-pick + exceldownload icon).
   2. Parse both workbooks, filter to East Reliance by USER CODE in Targets.
-  3. Derive per ISD per date: Weekly Off / Leave(+type) / Present + Late(>12:30).
+  3. Derive per ISD per date: Weekly Off / Leave(+type) / Present + Late(>1:00 PM).
   4. Overwrite the Week-Off tab with the log  ->  ISP Code | Date | Status |
      Leave Type | In Time | Late.
   5. Build + send the daily and MTD reports (attendance_reports.py).

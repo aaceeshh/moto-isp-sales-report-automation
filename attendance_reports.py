@@ -15,7 +15,7 @@ Published log schema (Week-Off tab, same gid the pipelines already read):
       Status   : "Weekly Off" | "Leave" | "Present" | "Absent"
       Leave Type: e.g. "Casual Leave" / "Sick Leave" (only when Status=Leave)
       In Time  : e.g. "01:03 PM" (Present rows)
-      Late     : "Y" when Status=Present and In Time > 12:30 PM, else ""
+      Late     : "Y" when Status=Present and In Time > 1:00 PM, else ""
 
 Exclusion rule (confirmed with owner): ISDs with Status in {Weekly Off, Leave}
 are omitted from Zero-Sale / No-Upload flags. Late is a FLAG ONLY — late ISDs
@@ -28,7 +28,7 @@ from datetime import datetime, date
 
 # Statuses that remove an ISD from the Zero/No-Upload checks for that date.
 EXCLUDE_STATUSES = {"weekly off", "leave"}
-LATE_CUTOFF = (12, 45)   # 12:45 PM — strictly AFTER this is "late"
+LATE_CUTOFF = (13, 0)    # 1:00 PM — strictly AFTER this is "late"
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -64,7 +64,7 @@ def is_late(in_time):
     t = parse_clock(in_time)
     if not t:
         return False
-    return t > LATE_CUTOFF            # strictly after 12:30 PM
+    return t > LATE_CUTOFF            # strictly after 1:00 PM
 
 def fmt_day(d):
     return "%02d %s" % (d.day, _MONTHS[d.month - 1])
@@ -178,7 +178,7 @@ def build_daily_report(target_date, codes, tsi_order, log):
             L.append("  🧾 <b>Leave</b>")
             L += [line(c, esc(lt or "Leave")) for c, lt in lvl]
         if ltl:
-            L.append("  ⏰ <b>Late &gt;12:45</b>")
+            L.append("  ⏰ <b>Late &gt;1:00 PM</b>")
             L += [line(c, esc(it)) for c, it in ltl]
         if pdl:
             L.append("  ⏳ <b>Approval Pending</b>")
@@ -214,7 +214,7 @@ def build_mtd_report(year, month, codes, tsi_order, log):
     def _active(c):
         return not _is_inactive(codes.get(c))
     L = ["\U0001F4CA <b>Attendance MTD — %s</b>" % hdr,
-         "<i>Week-Off · Leave · Late (&gt;12:45) · Not-marked, by ISD</i>", "━" * 20, ""]
+         "<i>Week-Off · Leave · Late (&gt;1:00 PM) · Not-marked, by ISD</i>", "━" * 20, ""]
     days = lambda ds: ", ".join("%02d" % d.day for d in sorted(ds))
     for t in tsi_order:
         tcodes = [c for c in agg if (codes.get(c) or {}).get("tsi") == t
@@ -307,7 +307,7 @@ def _cell(rec):
         return "Late"
     return w
 
-LEGEND = ("Note: 'Late' = reported after 12:45 PM · 'Leave' includes approved + "
+LEGEND = ("Note: 'Late' = reported after 1:00 PM · 'Leave' includes approved + "
           "pending · blank = no attendance record")
 
 # Count columns inserted right after ISP Code (MTD matrix). Order matters for layout.
