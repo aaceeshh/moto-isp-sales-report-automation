@@ -61,9 +61,14 @@ TSI_EDITOR_EMAILS = [
 
 COLS = [
     "TSI Name", "ISP Code", "ISD Name", "Store Code",
-    "Retailer / Store", "City", "State", "Category", "Remarks",
+    "Retailer / Store", "City", "State", "Category",
+    "Zero-Sale Days (MTD)", "Zero-Sale Dates",
+    "No-Upload Days (MTD)", "No-Upload Dates",
+    "Remarks",
 ]
 N = len(COLS)
+# 0-based index of the (editable) Remarks column — everything else is locked.
+REMARKS_COL = N - 1   # 12 -> column M
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 
@@ -202,16 +207,26 @@ def load_weekoff():
 def load_sales(target_date, targets, weekoff):
     if not SALES_CSV_URL:
         raise EnvironmentError("SALES_CSV_URL is not set")
-    # Build the set of ISP Codes off (Weekly Off / Leave) on target_date, from
-    # whichever WeekOff-tab format is live.
+    # ISP Codes off (Weekly Off / Leave) are excluded both from the day's lists
+    # AND from the month-to-date history below. The off-set is per-date, so it is
+    # resolved on demand and cached (the MTD scan touches many dates).
     _DAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-    _target_day = _DAY_NAMES[target_date.weekday()]
     _wo_mode, _wo_data = weekoff
     if _wo_mode == "log":
         import attendance_reports as AR
-        _excl = AR.excluded_codes(_wo_data, target_date)
-    else:
-        _excl = {c for c, dn in _wo_data.items() if dn.lower() == _target_day.lower()}
+
+    _excl_cache = {}
+    def _excluded(code, d):
+        s = _excl_cache.get(d)
+        if s is None:
+            if _wo_mode == "log":
+                s = AR.excluded_codes(_wo_data, d)
+            else:
+                dn = _DAY_NAMES[d.weekday()].lower()
+                s = {c for c, v in _wo_data.items() if str(v).strip().lower() == dn}
+            _excl_cache[d] = s
+        return code in s
+
     rows = _fetch_csv(SALES_CSV_URL)
     if not rows:
         print("[Remarks] Sales CSV returned no rows.")
@@ -232,20 +247,33 @@ def load_sales(target_date, targets, weekoff):
 
     def g(r, key): return (r.get(key) or "").strip() if key else ""
 
-    zero, noup = {}, {}
+    zero, noup = {}, {}            # target_date lists (displayed rows)
+    zero_hist, noup_hist = {}, {}  # code -> set of month-to-date dates per status
     for r in rows:
-        if _parse_date(g(r, k_date)) != target_date:
+        d = _parse_date(g(r, k_date))
+        if not d:
             continue
         code   = g(r, k_code)
         status = g(r, k_status)
         if not code:
             continue
-        # Skip ISDs on Weekly Off / Leave for this date
-        if code in _excl:
-            continue
-        tgt      = targets.get(code, {})
+        tgt = targets.get(code, {})
         # Skip ISDs marked Inactive in Targets (exact match — "inactive" contains "active")
         if (tgt.get("status") or "").strip().lower() == "inactive":
+            continue
+
+        # Month-to-date history: same calendar month as target_date, up to and
+        # including it. Weekly-Off / Leave days are not counted (they weren't
+        # expected to upload). A set dedups multiple rows for one ISD per day.
+        if (d.year == target_date.year and d.month == target_date.month
+                and d <= target_date and not _excluded(code, d)):
+            if status == "Zero Sale Uploaded":
+                zero_hist.setdefault(code, set()).add(d)
+            elif status == "Sale Not Uploaded":
+                noup_hist.setdefault(code, set()).add(d)
+
+        # The day's displayed lists (target_date only, same exclusions).
+        if d != target_date or _excluded(code, d):
             continue
         retailer = g(r, k_ret) or tgt.get("retailer", "")
         # TSI from the Targets roster (remapped) when available; else the
@@ -261,6 +289,15 @@ def load_sales(target_date, targets, weekoff):
             zero[code] = isd
         elif status == "Sale Not Uploaded":
             noup[code] = isd
+
+    # Attach the MTD history to every displayed ISD (dates as "1st, 2nd, 4th").
+    def _dates_str(dset):
+        return ", ".join(_ordinal(x.day) for x in sorted(dset)) if dset else "—"
+    for code, isd in list(zero.items()) + list(noup.items()):
+        isd["zero_days"]  = len(zero_hist.get(code, ()))
+        isd["zero_dates"] = _dates_str(zero_hist.get(code, set()))
+        isd["noup_days"]  = len(noup_hist.get(code, ()))
+        isd["noup_dates"] = _dates_str(noup_hist.get(code, set()))
 
     srt = lambda x: (x["tsi"].lower(), x["name"].lower())
     return sorted(zero.values(), key=srt), sorted(noup.values(), key=srt)
@@ -361,14 +398,14 @@ def share_with_tsis(drv, file_id, emails):
 
 def protect_tab_columns(svc, file_id, sheet_id, owner_email):
     """
-    Lock all columns on this tab EXCEPT column I (index 8, Remarks).
-    Only owner_email can edit the locked columns.
-    TSI editors (added via share_with_tsis) can only edit the unprotected column I.
+    Lock all columns on this tab EXCEPT the Remarks column (index REMARKS_COL = 12,
+    column M). Only owner_email can edit the locked columns. TSI editors (added via
+    share_with_tsis) can only edit the unprotected Remarks column.
 
     Two protected ranges:
-      - Columns A-H  (startColumnIndex 0, endColumnIndex 8)
-      - Columns J-Z  (startColumnIndex 9, endColumnIndex 26)
-    Column I (index 8) is left unprotected intentionally.
+      - Columns A-L  (startColumnIndex 0, endColumnIndex REMARKS_COL)
+      - Columns N-Z  (startColumnIndex REMARKS_COL+1, endColumnIndex 26)
+    Column M (index REMARKS_COL) is left unprotected intentionally.
     """
     if not owner_email:
         print("[Remarks] Skipping column protection — owner email not available")
@@ -378,14 +415,14 @@ def protect_tab_columns(svc, file_id, sheet_id, owner_email):
     reqs = [
         {"addProtectedRange": {"protectedRange": {
             "range": {"sheetId": sheet_id,
-                      "startColumnIndex": 0, "endColumnIndex": 8},
+                      "startColumnIndex": 0, "endColumnIndex": REMARKS_COL},
             "description": "Locked - owner edit only",
             "warningOnly": False,
             "editors": editors,
         }}},
         {"addProtectedRange": {"protectedRange": {
             "range": {"sheetId": sheet_id,
-                      "startColumnIndex": 9, "endColumnIndex": 26},
+                      "startColumnIndex": REMARKS_COL + 1, "endColumnIndex": 26},
             "description": "Locked - owner edit only",
             "warningOnly": False,
             "editors": editors,
@@ -394,7 +431,7 @@ def protect_tab_columns(svc, file_id, sheet_id, owner_email):
     svc.spreadsheets().batchUpdate(
         spreadsheetId=file_id, body={"requests": reqs}
     ).execute()
-    print("[Remarks] Column protection applied — column I (Remarks) is editable by TSIs")
+    print("[Remarks] Column protection applied — Remarks column (M) is editable by TSIs")
 
 # ── Sheet content builder ─────────────────────────────────────────────────────
 
@@ -453,7 +490,9 @@ class _Builder:
         for i, isd in enumerate(isds):
             row = self._r()
             self._add([isd["tsi"], isd["code"], isd["name"], isd["store_code"],
-                       isd["retailer"], isd["city"], isd["state"], isd["category"], ""])
+                       isd["retailer"], isd["city"], isd["state"], isd["category"],
+                       isd.get("zero_days", 0), isd.get("zero_dates", "—"),
+                       isd.get("noup_days", 0), isd.get("noup_dates", "—"), ""])
             bg = alt_bg if i % 2 == 0 else C_WHITE
             self._fmt(row, 0, row+1, N-1, bg=bg)
             self._fmt(row, N-1, row+1, N, bg=C_REMARKS, wrap=True)
@@ -544,8 +583,9 @@ def write_tab(svc, file_id, tab_name, zero_list, noup_list, target_date, owner_e
         body={"values": values},
     ).execute()
 
-    # Column widths: TSI, Code, ISD Name, StoreCode, Retailer, City, State, Cat, Remarks
-    col_px = [145, 90, 165, 90, 185, 90, 90, 80, 245]
+    # Column widths: TSI, Code, ISD Name, StoreCode, Retailer, City, State, Cat,
+    #   Zero Days, Zero Dates, No-Upload Days, No-Upload Dates, Remarks
+    col_px = [145, 90, 165, 90, 185, 90, 90, 80, 95, 150, 110, 150, 245]
     dim_reqs = [{"updateDimensionProperties": {
         "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
                   "startIndex": i, "endIndex": i+1},
@@ -558,9 +598,27 @@ def write_tab(svc, file_id, tab_name, zero_list, noup_list, target_date, owner_e
         "fields": "gridProperties.frozenRowCount",
     }}]
 
+    # Centre the two count columns (8, 10); wrap the two date columns (9, 11).
+    nrows = len(values)
+    hist_fmt = []
+    for idx in (8, 10):
+        hist_fmt.append({"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": nrows,
+                      "startColumnIndex": idx, "endColumnIndex": idx + 1},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat.horizontalAlignment",
+        }})
+    for idx in (9, 11):
+        hist_fmt.append({"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": nrows,
+                      "startColumnIndex": idx, "endColumnIndex": idx + 1},
+            "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+            "fields": "userEnteredFormat.wrapStrategy",
+        }})
+
     svc.spreadsheets().batchUpdate(
         spreadsheetId=file_id,
-        body={"requests": fmt_reqs + dim_reqs + freeze_req},
+        body={"requests": fmt_reqs + dim_reqs + freeze_req + hist_fmt},
     ).execute()
 
     print("[Remarks] Written tab '" + tab_name + "': "
