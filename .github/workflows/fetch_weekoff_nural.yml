@@ -2,12 +2,13 @@ name: Nural Week-Off / Leave Fetch
 
 # Pulls Week-Off / Leave / attendance from Nural, writes the date-stamped log
 # into the Week-Off tab, and sends the daily + MTD attendance reports.
-# Runs at 4:00 PM IST (first update after 3 PM) and 11:59 PM IST (finalize).
+# Runs at 1:00 PM, 4:00 PM and 11:00 PM IST (the 11 PM run finalises + sends MTD).
 on:
   workflow_dispatch:
   schedule:
+    - cron: '30 7 * * *'    # 1:00 PM IST
     - cron: '30 10 * * *'   # 4:00 PM IST
-    - cron: '29 18 * * *'   # 11:59 PM IST
+    - cron: '30 17 * * *'   # 11:00 PM IST
 
 jobs:
   weekoff-fetch:
