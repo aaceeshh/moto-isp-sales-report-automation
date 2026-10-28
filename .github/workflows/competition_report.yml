@@ -26,10 +26,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install playwright openpyxl
+          python -m pip install playwright
           python -m playwright install --with-deps chromium
       - name: Fetch competition report and send Telegram
         env:
+          PYTHONUNBUFFERED:     "1"
           PORTAL_USER:          ${{ secrets.PORTAL_USER }}
           PORTAL_PASS:          ${{ secrets.PORTAL_PASS }}
           TARGETS_CSV_URL:      ${{ secrets.TARGETS_CSV_URL }}
