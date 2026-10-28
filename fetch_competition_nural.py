@@ -177,43 +177,39 @@ def excluded_today(day):
 
 # ── Telegram message ─────────────────────────────────────────────────────────
 
-def build_message(not_reported, codes, label, subtitle, match_mode):
-    by_tsi = {t: [] for t in WO.TSIS}
+def build_messages(not_reported, codes, label, subtitle, match_mode):
+    """One self-contained Telegram message per TSI (TSIS order, then any extras).
+    A TSI with none still gets a short 'All reported' message, mirroring the
+    attendance 'Not Marked' report."""
+    by_tsi = {}
     for c in not_reported:
         t = codes[c].get("tsi") or "—"
         by_tsi.setdefault(t, []).append(c)
     for t in by_tsi:
         by_tsi[t].sort(key=lambda c: (codes[c].get("isd") or c).lower())
 
-    hdr = ["🏁 <b>Competition Sales — NOT Reported · %s</b>" % label,
-           "<i>%s</i>" % subtitle,
-           "━" * 20]
-
-    total = len(not_reported)
-    if total == 0:
-        hdr.append("✅ All eligible ISDs have reported competition sales for today.")
-        return "\n".join(hdr)
-
-    tallies = " · ".join("%s %d" % (t, len(by_tsi.get(t, []))) for t in WO.TSIS)
-    hdr.append("Not reported: <b>%d</b> ISDs" % total)
-    hdr.append(tallies)
-    L = hdr + [""]
-    order = WO.TSIS + [t for t in by_tsi if t not in WO.TSIS]
+    order = list(WO.TSIS) + [t for t in by_tsi if t not in WO.TSIS]
+    msgs = []
     for t in order:
-        lst = by_tsi.get(t) or []
-        if not lst:
-            continue
-        L.append("<b>%s</b> — %d" % (esc(t), len(lst)))
-        for c in lst:
-            info = codes[c]
-            line = "   • %s" % esc(info.get("isd") or c)
-            if info.get("store"):
-                line += " — %s" % esc(info["store"])
-            L.append(line)
+        lst = by_tsi.get(t, [])
+        L = ["🏁 <b>%s — Competition NOT Reported · %s</b>" % (esc(t), label),
+             "<i>%s</i>" % subtitle,
+             "<i>ISD · Store</i>", "━" * 20, ""]
+        if lst:
+            for i, c in enumerate(lst, 1):
+                info = codes[c]
+                line = "%d. <b>%s</b>" % (i, esc(info.get("isd") or c))
+                if info.get("store"):
+                    line += " — %s" % esc(info["store"])
+                L.append(line)
+        else:
+            L.append("<i>All reported 🎉</i>")
         L.append("")
-    if match_mode == "name":
-        L.append("<i>Matched by ISD name (no code in feed) — verify any unexpected name.</i>")
-    return "\n".join(L).rstrip()
+        L.append("<i>Count: %d</i>" % len(lst))
+        if match_mode == "name":
+            L.append("<i>Matched by ISD name — verify any unexpected name.</i>")
+        msgs.append("\n".join(L))
+    return msgs
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -251,8 +247,10 @@ def main():
     day_s = "%02d %s %d" % (day.day, day.strftime("%b"), day.year)
     subtitle = (day_s if offset > 0
                 else "%s · as of %s IST" % (day_s, now_ist.strftime("%I:%M %p").lstrip("0")))
-    msg = build_message(not_reported, codes, label, subtitle, mode)
-    WO.send_telegram(msg)
+    msgs = build_messages(not_reported, codes, label, subtitle, mode)
+    for m in msgs:
+        WO.send_telegram(m)
+    print("[COMP] sent %d TSI message(s)." % len(msgs))
     print("[COMP] done.")
 
 
