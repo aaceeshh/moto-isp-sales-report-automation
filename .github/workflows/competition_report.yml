@@ -1,8 +1,8 @@
 name: Competition Sales - Not Reported
 
-# Pulls the Nural Competition Sales Report for today (FTD) and sends a TSI-wise
-# Telegram list of East Reliance ISDs who have NOT reported competition sales.
-# Runs at 6:00 PM and 9:00 PM IST.
+# Pulls the Nural Competition Sales Report and sends a TSI-wise Telegram list of
+# East Reliance ISDs who have NOT reported competition sales.
+#   9:00 AM IST -> yesterday (D-1),  6:00 PM & 9:00 PM IST -> today (FTD).
 on:
   workflow_dispatch:
     inputs:
@@ -10,9 +10,14 @@ on:
         description: "Send to Telegram? 1 = send, 0 = dry-run (print only)"
         required: false
         default: "1"
+      day_offset:
+        description: "Day offset: 0 = today (FTD), 1 = yesterday (D-1). Blank = auto by schedule."
+        required: false
+        default: ""
   schedule:
-    - cron: '30 12 * * *'   # 6:00 PM IST
-    - cron: '30 15 * * *'   # 9:00 PM IST
+    - cron: '30 3 * * *'    # 9:00 AM IST  -> D-1 (yesterday)
+    - cron: '30 12 * * *'   # 6:00 PM IST  -> FTD (today)
+    - cron: '30 15 * * *'   # 9:00 PM IST  -> FTD (today)
 
 jobs:
   competition-report:
@@ -38,4 +43,6 @@ jobs:
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
           SEND_TELEGRAM:        ${{ github.event.inputs.send_telegram || '1' }}
+          # D-1 only on the 9 AM cron; manual runs can override via the day_offset input.
+          DAY_OFFSET:           ${{ github.event.inputs.day_offset || (github.event.schedule == '30 3 * * *' && '1' || '0') }}
         run: python fetch_competition_nural.py
