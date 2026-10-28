@@ -6,7 +6,8 @@ Pulls the Nural **Competition Sales Report** for today (FTD) and sends a
 TSI-wise Telegram message listing the East Reliance ISDs who have **NOT**
 reported any competition sale today.
 
-Runs 6 PM & 9 PM IST via GitHub Actions (competition_report.yml).
+Runs 6 PM & 9 PM IST for today (FTD) and 9 AM IST for yesterday (D-1, via
+DAY_OFFSET=1) through GitHub Actions (competition_report.yml).
 
 Pipeline:
   1. Playwright logs into motoindia.nuralsales.app (same portal / login as the
@@ -176,7 +177,7 @@ def excluded_today(day):
 
 # ── Telegram message ─────────────────────────────────────────────────────────
 
-def build_message(not_reported, codes, day, now_ist, match_mode):
+def build_message(not_reported, codes, label, subtitle, match_mode):
     by_tsi = {t: [] for t in WO.TSIS}
     for c in not_reported:
         t = codes[c].get("tsi") or "—"
@@ -184,9 +185,8 @@ def build_message(not_reported, codes, day, now_ist, match_mode):
     for t in by_tsi:
         by_tsi[t].sort(key=lambda c: (codes[c].get("isd") or c).lower())
 
-    day_s = "%02d %s %d" % (day.day, day.strftime("%b"), day.year)
-    hdr = ["🏁 <b>Competition Sales — NOT Reported · FTD</b>",
-           "<i>%s · as of %s IST</i>" % (day_s, now_ist.strftime("%I:%M %p").lstrip("0")),
+    hdr = ["🏁 <b>Competition Sales — NOT Reported · %s</b>" % label,
+           "<i>%s</i>" % subtitle,
            "━" * 20]
 
     total = len(not_reported)
@@ -218,10 +218,13 @@ def build_message(not_reported, codes, day, now_ist, match_mode):
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    _ovr = env("TODAY_OVERRIDE")
     now_ist = datetime.now(IST)
-    day = datetime.strptime(_ovr, "%Y-%m-%d").date() if _ovr else now_ist.date()
-    print("[COMP] FTD date:", day)
+    offset  = int(env("DAY_OFFSET", "0") or "0")   # 0 = today (FTD), 1 = yesterday (D-1)
+    _ovr    = env("TODAY_OVERRIDE")
+    day = (datetime.strptime(_ovr, "%Y-%m-%d").date() if _ovr
+           else now_ist.date() - timedelta(days=offset))
+    label = "D-%d" % offset if offset > 0 else "FTD"
+    print("[COMP] report:", label, "| date:", day)
 
     codes = WO.load_codes()
     print("[COMP] roster ISDs:", len(codes))
@@ -245,7 +248,10 @@ def main():
                     and c not in reported]
     print("[COMP] NOT reported:", len(not_reported))
 
-    msg = build_message(not_reported, codes, day, now_ist, mode)
+    day_s = "%02d %s %d" % (day.day, day.strftime("%b"), day.year)
+    subtitle = (day_s if offset > 0
+                else "%s · as of %s IST" % (day_s, now_ist.strftime("%I:%M %p").lstrip("0")))
+    msg = build_message(not_reported, codes, label, subtitle, mode)
     WO.send_telegram(msg)
     print("[COMP] done.")
 
